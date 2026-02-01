@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+data/
+output/
+*.db
+.DS_Store
+profile.md
+codebase_dump.txt
+.claude/

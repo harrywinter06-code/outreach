@@ -1,0 +1,41 @@
+# Your Name — Candidate Profile
+
+## Contact
+- Email: your.email@gmail.com
+- Phone: +44 XXXX XXXXXX
+- Location: London, UK
+- LinkedIn: linkedin.com/in/your-profile
+
+## Education
+**University Name** — Degree Title (Expected Month Year)
+- Predicted grade / GPA
+- Relevant modules
+- Relevant achievements
+
+## Projects
+
+### Your Main Project (technologies) — Year–Present
+Describe what it is and what it does in 3–5 bullet points. Be specific about what you built, what data it uses, and how it runs. Avoid vague language like "used machine learning."
+- What it ingests / processes
+- What it produces
+- How it runs (automated / manual / daily / on-demand)
+- What you can speak to in an interview (be honest here)
+
+## Work Experience
+
+### Job Title — Company (Start–End)
+- Key responsibilities and achievements
+
+## Technical Skills
+- **Languages**: Python, ...
+- **Libraries**: pandas, numpy, ...
+- **Tools**: Git, SQL, ...
+
+## Personal Profile
+- Availability: from Month Year, for X months
+- Location: City, Country
+- Visa: note if no sponsorship required, or what visa situation applies
+
+## IMPORTANT — what [your name] cannot claim at interview:
+- Be specific here. List any algorithms, techniques, or claims you used but cannot deeply defend mathematically.
+- This section is read by the AI before generating cover letters — it prevents overclaiming.
