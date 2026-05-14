@@ -113,6 +113,8 @@ def _check_experiment_overrun(experiment: str, planned_cost: float) -> None:
 
 
 def _check_loop(endpoint: str, params: dict[str, object], state_hash: str | None) -> None:
+    if state_hash is None:
+        return
     payload = f"{endpoint}|{sorted(params.items()) if params else ''}"
     h = hashlib.sha256(payload.encode()).hexdigest()[:16]
     threshold = settings().loop_repeat_threshold

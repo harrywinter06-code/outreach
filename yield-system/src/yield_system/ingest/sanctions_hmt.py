@@ -1,8 +1,11 @@
-"""UK HMT OFSI ConList XML ingester. Run daily alongside OFAC.
+"""UK HMT OFSI ConList XML ingester (2022format). Run daily alongside OFAC.
 
-Uses iterparse to stream-parse to avoid loading the full tree.
+The 2022format XML lists each name variation as a separate FinancialSanctionsTarget
+row sharing the same UKSanctionsListRef. We group by ref, pick the first name as
+canonical, and store the rest as aliases.
 """
 import io
+from collections import defaultdict
 
 import httpx
 from defusedxml.ElementTree import iterparse
@@ -11,15 +14,17 @@ from yield_system.experiments.sanctions import upsert_entry
 from yield_system.log import post_log, pre_log
 
 HMT_URL = "https://ofsistorage.blob.core.windows.net/publishlive/2022format/ConList.xml"
-_ENTRY_TAG = "Designation"
 
 
-def _text(elem, *tags: str) -> str:
-    for tag in tags:
-        child = elem.find(tag)
-        if child is not None and child.text:
-            return child.text.strip()
+def _ns(root_tag: str) -> str:
+    if root_tag.startswith("{"):
+        return "{" + root_tag.split("}")[0][1:] + "}"
     return ""
+
+
+def _text(elem, tag: str) -> str:
+    child = elem.find(tag)
+    return (child.text or "").strip() if child is not None else ""
 
 
 def ingest(url: str = HMT_URL, fetcher=None) -> int:
@@ -38,59 +43,56 @@ def ingest(url: str = HMT_URL, fetcher=None) -> int:
         else:
             xml_bytes = fetcher()
 
-        added = 0
-        total = 0
+        # Collect all name variants per UKSanctionsListRef before upserting,
+        # because multiple FinancialSanctionsTarget rows share the same ref.
+        entries: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
+
         context = iterparse(io.BytesIO(xml_bytes), events=("start", "end"))
         context_iter = iter(context)
-        _, root = next(context_iter)  # root = ArrayOfDesignation
+        _, root = next(context_iter)
+
+        ns = _ns(root.tag)
+        entry_tag = f"{ns}FinancialSanctionsTarget"
 
         for event, elem in context_iter:
-            if event != "end" or elem.tag != _ENTRY_TAG:
+            if event != "end" or elem.tag != entry_tag:
                 continue
 
-            uid = _text(elem, "UniqueID", "UniquID")
-            names_el = elem.find("Names")
-            if names_el is None:
-                root.clear()
-                continue
-
-            org = _text(names_el, "Name6")
+            uid = _text(elem, f"{ns}UKSanctionsListRef")
+            org = _text(elem, f"{ns}Name6")
             if org:
                 name = org
             else:
-                parts = [
-                    _text(names_el, "Name2"),  # first
-                    _text(names_el, "Name3"),  # middle
-                    _text(names_el, "Name4"),  # last
-                ]
+                parts = [_text(elem, f"{ns}name{i}") for i in range(1, 6)]
                 name = " ".join(p for p in parts if p)
 
-            if not name or not uid:
-                root.clear()
-                continue
+            program = _text(elem, f"{ns}RegimeName") or None
 
-            program = _text(elem, "Regime")
+            if uid and name:
+                entries[uid].append((name, program))
 
+            root.clear()
+
+        added = 0
+        for uid, variants in entries.items():
+            canonical_name = variants[0][0]
+            program = variants[0][1]
+            seen: set[str] = {canonical_name}
             aliases: list[str] = []
-            aliases_el = elem.find("Aliases")
-            if aliases_el is not None:
-                for alias in aliases_el.findall("Alias"):
-                    a = _text(alias, "AliasName")
-                    if a and a != name:
-                        aliases.append(a)
-
-            total += 1
+            for v_name, _ in variants[1:]:
+                if v_name not in seen:
+                    aliases.append(v_name)
+                    seen.add(v_name)
             if upsert_entry(
                 source="hmt",
                 source_id=uid,
-                name=name,
+                name=canonical_name,
                 aliases=aliases,
                 program=program,
             ):
                 added += 1
 
-            root.clear()
-
+        total = len(entries)
         post_log(call_id, f"ingested_{total}_added_{added}")
         return added
     except httpx.HTTPError as ex:
