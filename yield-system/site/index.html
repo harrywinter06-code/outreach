@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Veriflow Labs — Developer APIs for Compliance & Data Enrichment</title>
+<meta name="description" content="Production-ready APIs for sanctions screening, UK postcode enrichment, webhook delivery, and email DNS compliance. Free tier. No credit card required.">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #ffffff;
+    --bg2: #f8f9fb;
+    --border: #e5e7eb;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --tag-bg: #eff6ff;
+    --tag-text: #1d4ed8;
+    --card-shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Nav */
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; height: 60px; border-bottom: 1px solid var(--border); background: var(--bg); position: sticky; top: 0; z-index: 10; }
+  .logo { font-weight: 700; font-size: 1.1rem; color: var(--text); letter-spacing: -.3px; }
+  .logo span { color: var(--accent); }
+  nav ul { list-style: none; display: flex; gap: 2rem; }
+  nav ul a { color: var(--muted); font-size: .9rem; }
+  nav ul a:hover { color: var(--text); text-decoration: none; }
+  .nav-cta { background: var(--accent); color: #fff !important; padding: .4rem 1rem; border-radius: 6px; font-size: .875rem; font-weight: 500; }
+  .nav-cta:hover { background: var(--accent-hover); text-decoration: none !important; }
+
+  /* Hero */
+  .hero { max-width: 780px; margin: 0 auto; padding: 6rem 2rem 4rem; text-align: center; }
+  .hero h1 { font-size: clamp(2rem, 5vw, 3rem); font-weight: 800; letter-spacing: -.5px; line-height: 1.15; margin-bottom: 1.25rem; }
+  .hero p { font-size: 1.125rem; color: var(--muted); max-width: 560px; margin: 0 auto 2rem; }
+  .hero-ctas { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+  .btn-primary { background: var(--accent); color: #fff; padding: .65rem 1.5rem; border-radius: 8px; font-weight: 600; font-size: .95rem; transition: background .15s; }
+  .btn-primary:hover { background: var(--accent-hover); text-decoration: none; }
+  .btn-secondary { background: var(--bg2); color: var(--text); padding: .65rem 1.5rem; border-radius: 8px; font-weight: 600; font-size: .95rem; border: 1px solid var(--border); }
+  .btn-secondary:hover { background: #f0f1f3; text-decoration: none; }
+  .badge { display: inline-block; background: var(--tag-bg); color: var(--tag-text); font-size: .75rem; font-weight: 600; padding: .25rem .75rem; border-radius: 999px; margin-bottom: 1.5rem; text-transform: uppercase; letter-spacing: .5px; }
+
+  /* Code snippet */
+  .snippet { background: #0f172a; border-radius: 10px; padding: 1.25rem 1.5rem; text-align: left; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: .8rem; color: #e2e8f0; max-width: 640px; margin: 3rem auto 0; overflow-x: auto; }
+  .snippet .c { color: #94a3b8; }
+  .snippet .s { color: #86efac; }
+  .snippet .k { color: #93c5fd; }
+  .snippet .n { color: #fbbf24; }
+
+  /* Products */
+  .section { padding: 5rem 2rem; }
+  .section-inner { max-width: 1100px; margin: 0 auto; }
+  .section-label { font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: .75rem; }
+  .section h2 { font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 800; letter-spacing: -.3px; margin-bottom: .75rem; }
+  .section-sub { color: var(--muted); font-size: 1rem; max-width: 540px; margin-bottom: 3rem; }
+  .products { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.25rem; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; box-shadow: var(--card-shadow); }
+  .card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; margin-bottom: 1rem; }
+  .card h3 { font-size: 1rem; font-weight: 700; margin-bottom: .4rem; }
+  .card p { font-size: .875rem; color: var(--muted); margin-bottom: 1rem; line-height: 1.55; }
+  .card-tags { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .tag { font-size: .7rem; font-weight: 600; padding: .2rem .55rem; border-radius: 4px; background: var(--tag-bg); color: var(--tag-text); }
+  .tag.green { background: #f0fdf4; color: #15803d; }
+  .tag.purple { background: #faf5ff; color: #7e22ce; }
+  .tag.orange { background: #fff7ed; color: #c2410c; }
+  .endpoint { font-family: "SF Mono", Consolas, monospace; font-size: .72rem; color: var(--accent); background: #eff6ff; padding: .2rem .45rem; border-radius: 4px; display: inline-block; margin-top: .75rem; }
+
+  /* Use cases */
+  .use-cases-bg { background: var(--bg2); }
+  .use-cases { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+  .uc { padding: 1.25rem; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); }
+  .uc h4 { font-size: .9rem; font-weight: 700; margin-bottom: .35rem; }
+  .uc p { font-size: .8rem; color: var(--muted); }
+
+  /* Pricing */
+  .pricing { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; }
+  .plan { border: 1px solid var(--border); border-radius: 12px; padding: 2rem; position: relative; }
+  .plan.featured { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+  .plan-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; font-size: .7rem; font-weight: 700; padding: .2rem .75rem; border-radius: 999px; white-space: nowrap; }
+  .plan-name { font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: .5rem; }
+  .plan-price { font-size: 2.25rem; font-weight: 800; letter-spacing: -.5px; margin-bottom: .25rem; }
+  .plan-price span { font-size: 1rem; font-weight: 500; color: var(--muted); }
+  .plan-desc { font-size: .85rem; color: var(--muted); margin-bottom: 1.5rem; }
+  .plan ul { list-style: none; display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1.75rem; }
+  .plan ul li { font-size: .875rem; display: flex; gap: .5rem; align-items: flex-start; }
+  .plan ul li::before { content: "✓"; color: #16a34a; font-weight: 700; flex-shrink: 0; margin-top: .05rem; }
+  .plan ul li.no::before { content: "–"; color: var(--muted); }
+
+  /* How it works */
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; }
+  .step { text-align: center; padding: 1.5rem 1rem; }
+  .step-num { width: 36px; height: 36px; background: var(--accent); color: #fff; border-radius: 50%; font-weight: 800; font-size: .9rem; display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
+  .step h4 { font-size: .95rem; font-weight: 700; margin-bottom: .35rem; }
+  .step p { font-size: .82rem; color: var(--muted); }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 2.5rem 2rem; }
+  .footer-inner { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: gap; gap: 1rem; }
+  .footer-left { font-size: .85rem; color: var(--muted); }
+  .footer-links { display: flex; gap: 1.5rem; font-size: .85rem; }
+
+  @media (max-width: 600px) {
+    nav ul { display: none; }
+    .footer-inner { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">Veriflow<span>Labs</span></div>
+  <ul>
+    <li><a href="#products">APIs</a></li>
+    <li><a href="#pricing">Pricing</a></li>
+    <li><a href="mailto:hello@veriflowlabs.co.uk">Contact</a></li>
+  </ul>
+  <a href="#pricing" class="nav-cta">Get API Key</a>
+</nav>
+
+<section class="hero">
+  <div class="badge">Now in early access</div>
+  <h1>Compliance &amp; data APIs<br>built for developers</h1>
+  <p>Four production-ready APIs — sanctions screening, UK postcode enrichment, webhook delivery, and email DNS compliance. Free tier included. No credit card required to start.</p>
+  <div class="hero-ctas">
+    <a href="#pricing" class="btn-primary">Start free</a>
+    <a href="#products" class="btn-secondary">View APIs</a>
+  </div>
+
+  <div class="snippet">
+    <span class="c"># Screen a batch of names against OFAC, UK HMT and EU consolidated lists</span><br>
+    <span class="k">curl</span> <span class="s">-X POST</span> https://api.veriflowlabs.co.uk/v1/sanctions/screen \<br>
+    &nbsp;&nbsp;<span class="s">-H</span> <span class="n">"X-API-Key: ys_&lt;your_key&gt;"</span> \<br>
+    &nbsp;&nbsp;<span class="s">-d</span> <span class="n">'{"names": ["Acme Corp", "John Smith"]}'</span>
+  </div>
+</section>
+
+<section class="section" id="products">
+  <div class="section-inner">
+    <div class="section-label">APIs</div>
+    <h2>Four focused APIs</h2>
+    <p class="section-sub">Each API does one thing well. No sprawling SDKs. No vendor lock-in. Plain JSON over HTTPS.</p>
+
+    <div class="products">
+      <div class="card">
+        <div class="card-icon" style="background:#eff6ff;">🔍</div>
+        <h3>Sanctions Screening</h3>
+        <p>Batch-screen up to 1,000 names per call against OFAC SDN, UK HMT OFSI, and EU consolidated lists. Subscribe to real-time delta webhooks so you're notified the moment a name is added or removed — no polling required.</p>
+        <div class="card-tags">
+          <span class="tag">OFAC SDN</span>
+          <span class="tag">UK HMT</span>
+          <span class="tag">EU consolidated</span>
+          <span class="tag green">Delta webhooks</span>
+        </div>
+        <div class="endpoint">POST /v1/sanctions/screen</div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background:#f0fdf4;">📍</div>
+        <h3>UK Postcode Enrichment</h3>
+        <p>Resolve any UK postcode to lat/lng, LSOA, MSOA, district, region, and full IMD 2019 deprivation data (decile, quintile, score). Built on ONS Postcode Directory — no ONS account or data licence required.</p>
+        <div class="card-tags">
+          <span class="tag green">IMD 2019</span>
+          <span class="tag green">LSOA / MSOA</span>
+          <span class="tag green">Admin boundaries</span>
+        </div>
+        <div class="endpoint">GET /v1/postcode/{postcode}</div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background:#faf5ff;">⚡</div>
+        <h3>Webhook Retry Queue</h3>
+        <p>Guaranteed at-least-once delivery with idempotency keys. If your endpoint is down, events queue automatically and retry with exponential backoff. 7-day retention on the free tier. GDPR-compliant UK data residency.</p>
+        <div class="card-tags">
+          <span class="tag purple">Idempotent</span>
+          <span class="tag purple">Exponential backoff</span>
+          <span class="tag purple">UK data residency</span>
+        </div>
+        <div class="endpoint">POST /v1/webhookq/enqueue</div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon" style="background:#fff7ed;">📧</div>
+        <h3>Email DNS Compliance</h3>
+        <p>One API call returns a composite compliance score across MX, SPF, DKIM, DMARC, BIMI, and DNSSEC. Identifies exactly which records are missing or misconfigured. Essential since Google and Yahoo's 2024 bulk-sender mandate.</p>
+        <div class="card-tags">
+          <span class="tag orange">SPF / DKIM / DMARC</span>
+          <span class="tag orange">BIMI</span>
+          <span class="tag orange">DNSSEC</span>
+        </div>
+        <div class="endpoint">GET /v1/emailscore/{domain}</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section use-cases-bg">
+  <div class="section-inner">
+    <div class="section-label">Use cases</div>
+    <h2>Who uses Veriflow Labs</h2>
+    <p class="section-sub">Common workflows across compliance, data, and engineering teams.</p>
+    <div class="use-cases">
+      <div class="uc">
+        <h4>Fintech compliance</h4>
+        <p>Screen onboarding applicants and transaction counterparties against all major sanctions lists at the point of KYC.</p>
+      </div>
+      <div class="uc">
+        <h4>Insurance underwriting</h4>
+        <p>Enrich customer postcodes with IMD deprivation data to refine risk models for home and motor products.</p>
+      </div>
+      <div class="uc">
+        <h4>PropTech &amp; site selection</h4>
+        <p>Rank locations by deprivation index, admin boundary, and demographic profile — one API call per postcode.</p>
+      </div>
+      <div class="uc">
+        <h4>Email deliverability</h4>
+        <p>Audit domain portfolios for SPF, DMARC, and BIMI gaps before a campaign send. Bulk-check lead lists programmatically.</p>
+      </div>
+      <div class="uc">
+        <h4>SaaS webhook infrastructure</h4>
+        <p>Offload reliable webhook delivery from your own stack. Idempotency keys prevent duplicate processing on retries.</p>
+      </div>
+      <div class="uc">
+        <h4>Health analytics</h4>
+        <p>Join patient or cohort postcodes with IMD data to support ICB budget allocation and population health dashboards.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="pricing">
+  <div class="section-inner">
+    <div class="section-label">Pricing</div>
+    <h2>Simple, transparent pricing</h2>
+    <p class="section-sub">Start free. Upgrade when you're ready. All plans billed monthly, cancel any time.</p>
+    <div class="pricing">
+      <div class="plan">
+        <div class="plan-name">Free</div>
+        <div class="plan-price">£0 <span>/month</span></div>
+        <div class="plan-desc">For prototyping and evaluation. No credit card required.</div>
+        <ul>
+          <li>100 requests / day per API</li>
+          <li>All four APIs included</li>
+          <li>JSON responses</li>
+          <li class="no">Webhook subscriptions</li>
+          <li class="no">Email support</li>
+          <li class="no">SLA</li>
+        </ul>
+        <a href="mailto:hello@veriflowlabs.co.uk?subject=Free API Key Request" class="btn-secondary" style="display:block;text-align:center;">Request free key</a>
+      </div>
+
+      <div class="plan featured">
+        <div class="plan-badge">Most popular</div>
+        <div class="plan-name">Pro</div>
+        <div class="plan-price">£19 <span>/month per API</span></div>
+        <div class="plan-desc">For production workloads. Sanctions API billed at £29/month.</div>
+        <ul>
+          <li>Unlimited requests</li>
+          <li>Webhook subscriptions (sanctions delta)</li>
+          <li>7-day webhook event retention</li>
+          <li>Email support (next business day)</li>
+          <li>99.5% uptime SLA</li>
+          <li>UK data residency (webhook queue)</li>
+        </ul>
+        <div style="display:flex;flex-direction:column;gap:.6rem;">
+          <a href="https://buy.stripe.com/bJe28laWn8D7dY954wbAs03" class="btn-primary" style="display:block;text-align:center;">Sanctions Screening — £29/mo</a>
+          <a href="https://buy.stripe.com/cNieV7fcDbPj07jcwYbAs02" class="btn-primary" style="display:block;text-align:center;">Postcode Enrichment — £19/mo</a>
+          <a href="https://buy.stripe.com/cNidR3ggH4mR07j7cEbAs01" class="btn-primary" style="display:block;text-align:center;">Webhook Queue — £19/mo</a>
+          <a href="https://buy.stripe.com/00w7sFfcDbPjdY968AbAs00" class="btn-primary" style="display:block;text-align:center;">Email DNS Score — £19/mo</a>
+        </div>
+      </div>
+
+      <div class="plan">
+        <div class="plan-name">Business</div>
+        <div class="plan-price">Custom</div>
+        <div class="plan-desc">For teams needing volume discounts, SLAs, or dedicated infrastructure.</div>
+        <ul>
+          <li>All Pro features</li>
+          <li>Volume pricing</li>
+          <li>Custom data residency</li>
+          <li>Priority support</li>
+          <li>99.9% uptime SLA</li>
+          <li>Dedicated onboarding</li>
+        </ul>
+        <a href="mailto:hello@veriflowlabs.co.uk?subject=Business Plan Enquiry" class="btn-secondary" style="display:block;text-align:center;">Contact us</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section use-cases-bg">
+  <div class="section-inner">
+    <div class="section-label">Get started</div>
+    <h2>Up and running in minutes</h2>
+    <p class="section-sub">No SDK required. Any HTTP client works.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h4>Request an API key</h4>
+        <p>Email us or sign up via the form. Your key arrives within one business day on the free tier.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h4>Add the header</h4>
+        <p>Pass <code>X-API-Key: ys_&lt;your_key&gt;</code> on every request. No OAuth flow, no token refresh.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h4>Call the endpoint</h4>
+        <p>Plain JSON in, plain JSON out. All APIs return consistent error codes and messages.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <h4>Upgrade when ready</h4>
+        <p>Hit the free-tier limit? Upgrade to Pro via Stripe. Your existing key continues to work.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div class="footer-left">
+      <strong>Veriflow Labs</strong><br>
+      <span>© 2026 Veriflow Labs. All rights reserved.</span><br>
+      <span>Contact: <a href="mailto:hello@veriflowlabs.co.uk">hello@veriflowlabs.co.uk</a></span>
+    </div>
+    <div class="footer-links">
+      <a href="privacy.html">Privacy Policy</a>
+      <a href="terms.html">Terms of Service</a>
+      <a href="mailto:hello@veriflowlabs.co.uk">Contact</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

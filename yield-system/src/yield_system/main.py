@@ -23,13 +23,15 @@ def _run_sanctions_ingest() -> None:
     from yield_system.ingest.sanctions_ofac import ingest as ingest_ofac
 
     try:
-        ingest_ofac()
-    except Exception:
-        pass
+        added = ingest_ofac()
+        print(f"ingest:ofac added={added}", flush=True)
+    except Exception as e:
+        print(f"ingest:ofac error={e}", flush=True)
     try:
-        ingest_hmt()
-    except Exception:
-        pass
+        added = ingest_hmt()
+        print(f"ingest:hmt added={added}", flush=True)
+    except Exception as e:
+        print(f"ingest:hmt error={e}", flush=True)
 
 
 def _daily_refresh_loop() -> None:

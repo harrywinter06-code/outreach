@@ -32,7 +32,7 @@ def ingest(url: str = HMT_URL, fetcher=None) -> int:
     )
     try:
         if fetcher is None:
-            r = httpx.get(url, timeout=60.0)
+            r = httpx.get(url, timeout=60.0, follow_redirects=True)
             r.raise_for_status()
             xml_bytes = r.content
         else:

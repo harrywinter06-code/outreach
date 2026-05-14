@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Service — Veriflow Labs</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111827; background: #fff; line-height: 1.7; }
+  a { color: #2563eb; }
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; height: 60px; border-bottom: 1px solid #e5e7eb; }
+  .logo { font-weight: 700; font-size: 1.1rem; text-decoration: none; color: #111827; }
+  .logo span { color: #2563eb; }
+  .content { max-width: 720px; margin: 0 auto; padding: 4rem 2rem; }
+  h1 { font-size: 2rem; font-weight: 800; margin-bottom: .5rem; }
+  .updated { font-size: .875rem; color: #6b7280; margin-bottom: 3rem; }
+  h2 { font-size: 1.1rem; font-weight: 700; margin: 2.5rem 0 .75rem; }
+  p { font-size: .95rem; color: #374151; margin-bottom: 1rem; }
+  ul { padding-left: 1.5rem; margin-bottom: 1rem; }
+  ul li { font-size: .95rem; color: #374151; margin-bottom: .4rem; }
+  footer { border-top: 1px solid #e5e7eb; padding: 2rem; text-align: center; font-size: .85rem; color: #6b7280; }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="logo">Veriflow<span>Labs</span></a>
+</nav>
+
+<div class="content">
+  <h1>Terms of Service</h1>
+  <p class="updated">Last updated: 13 May 2026</p>
+
+  <p>These Terms of Service ("Terms") govern your use of the Veriflow Labs API platform (the "Service") provided by Veriflow Labs ("we", "us", "our"). By accessing or using the Service you agree to these Terms.</p>
+
+  <h2>1. The Service</h2>
+  <p>Veriflow Labs provides HTTP APIs for: (a) sanctions name screening against OFAC SDN, UK HMT OFSI, and EU consolidated lists; (b) UK postcode enrichment with ONS administrative boundaries and IMD deprivation data; (c) managed webhook event delivery with idempotent retry; and (d) email domain DNS compliance scoring. We may modify or discontinue any part of the Service on 30 days' notice.</p>
+
+  <h2>2. Eligibility and accounts</h2>
+  <p>You must be at least 18 years old and legally capable of entering into a binding contract to use the Service. API keys are issued to the individual or entity named at signup and must not be shared with third parties. You are responsible for all activity under your key.</p>
+
+  <h2>3. Acceptable use</h2>
+  <p>You must not use the Service to:</p>
+  <ul>
+    <li>Violate any applicable law, including UK sanctions law, data protection law, or export control regulations.</li>
+    <li>Screen individuals or entities for purposes that constitute unlawful discrimination under the Equality Act 2010.</li>
+    <li>Reverse-engineer, resell, or sublicence the Service or the underlying data without written consent.</li>
+    <li>Attempt to circumvent rate limits, authentication, or access controls.</li>
+    <li>Transmit malicious code or conduct denial-of-service attacks against the Service.</li>
+    <li>Use the sanctions screening data as the sole basis for a compliance decision without appropriate human review.</li>
+  </ul>
+
+  <h2>4. Sanctions data disclaimer</h2>
+  <p>The sanctions screening data is sourced from public lists published by OFAC, UK HMT OFSI, and the EU. It is provided for informational purposes only. You remain solely responsible for your own compliance obligations. We do not warrant that the data is complete, accurate, or up to date at the moment of your query. You must maintain independent processes to meet your regulatory requirements. Use of the sanctions API does not constitute legal advice.</p>
+
+  <h2>5. Billing and payment</h2>
+  <p>Pro and Business plans are billed monthly in advance via Stripe. All prices are in GBP and exclusive of VAT where applicable. Subscriptions renew automatically unless cancelled before the renewal date. Refunds are not provided for partial billing periods. We reserve the right to suspend access for non-payment after 7 days' notice.</p>
+
+  <h2>6. Rate limits and fair use</h2>
+  <p>Free-tier accounts are limited to 100 requests per day per API. Pro accounts have no hard request limit but are subject to fair-use restrictions: sustained automated traffic that materially degrades service for other customers may result in throttling or account suspension with prior notice.</p>
+
+  <h2>7. Service availability</h2>
+  <p>We target 99.5% monthly uptime for Pro accounts. Scheduled maintenance is excluded. We will provide at least 24 hours' notice of planned downtime. Uptime credits (one additional month of service) are available on request if availability falls below 99% in a calendar month.</p>
+
+  <h2>8. Intellectual property</h2>
+  <p>All rights in the Service, API design, and documentation are owned by Veriflow Labs. The underlying public-domain sanctions lists, ONS postcode data, and IMD data remain subject to their respective licences (OGL v3 for ONS data; OFAC, HMT, and EU data are public domain). Nothing in these Terms transfers ownership of any intellectual property to you.</p>
+
+  <h2>9. Limitation of liability</h2>
+  <p>To the maximum extent permitted by law, Veriflow Labs is not liable for any indirect, incidental, consequential, or punitive damages arising from your use of the Service, including losses arising from compliance failures, missed sanctions matches, or webhook delivery failures. Our total aggregate liability for any claim arising from the Service is limited to the fees paid by you in the 3 months preceding the claim.</p>
+
+  <h2>10. Indemnification</h2>
+  <p>You agree to indemnify and hold harmless Veriflow Labs from any claims, losses, or damages (including legal fees) arising from your breach of these Terms, your use of the Service in violation of applicable law, or your use of the sanctions screening API in a manner that constitutes negligence.</p>
+
+  <h2>11. Termination</h2>
+  <p>You may cancel your subscription at any time via email to <a href="mailto:hello@veriflowlabs.co.uk">hello@veriflowlabs.co.uk</a>. We may terminate or suspend your access immediately for breach of these Terms or applicable law, or on 30 days' notice for any other reason.</p>
+
+  <h2>12. Governing law</h2>
+  <p>These Terms are governed by the laws of England and Wales. Any dispute shall be subject to the exclusive jurisdiction of the courts of England and Wales.</p>
+
+  <h2>13. Changes to these Terms</h2>
+  <p>We may update these Terms. Material changes will be notified by email at least 14 days before taking effect. Continued use of the Service after that date constitutes acceptance of the updated Terms.</p>
+
+  <h2>14. Contact</h2>
+  <p>Questions about these Terms: <a href="mailto:hello@veriflowlabs.co.uk">hello@veriflowlabs.co.uk</a></p>
+</div>
+
+<footer>© 2026 Veriflow Labs &nbsp;·&nbsp; <a href="index.html">Home</a> &nbsp;·&nbsp; <a href="privacy.html">Privacy Policy</a></footer>
+</body>
+</html>
