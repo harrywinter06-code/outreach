@@ -60,7 +60,16 @@ def build_app() -> FastAPI:
 
     postcode.ensure_table()
 
-    app = FastAPI(title="yield-system", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Veriflow Labs API",
+        description=(
+            "Compliance and data enrichment APIs: sanctions screening (OFAC + HMT), "
+            "UK postcode enrichment with IMD 2019 deprivation data, webhook delivery queue, "
+            "and email DNS compliance scoring (SPF/DMARC/BIMI/DNSSEC)."
+        ),
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
