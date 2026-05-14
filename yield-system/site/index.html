@@ -132,7 +132,7 @@
 
   <div class="snippet">
     <span class="c"># Screen a batch of names against OFAC, UK HMT and EU consolidated lists</span><br>
-    <span class="k">curl</span> <span class="s">-X POST</span> https://api.veriflowlabs.co.uk/v1/sanctions/screen \<br>
+    <span class="k">curl</span> <span class="s">-X POST</span> https://yield-system.fly.dev/v1/sanctions/screen \<br>
     &nbsp;&nbsp;<span class="s">-H</span> <span class="n">"X-API-Key: ys_&lt;your_key&gt;"</span> \<br>
     &nbsp;&nbsp;<span class="s">-d</span> <span class="n">'{"names": ["Acme Corp", "John Smith"]}'</span>
   </div>
@@ -179,7 +179,7 @@
           <span class="tag purple">Exponential backoff</span>
           <span class="tag purple">UK data residency</span>
         </div>
-        <div class="endpoint">POST /v1/webhookq/enqueue</div>
+        <div class="endpoint">POST /v1/webhookq/ingress/{token}</div>
       </div>
 
       <div class="card">
@@ -191,7 +191,7 @@
           <span class="tag orange">BIMI</span>
           <span class="tag orange">DNSSEC</span>
         </div>
-        <div class="endpoint">GET /v1/emailscore/{domain}</div>
+        <div class="endpoint">GET /v1/domain/{domain}</div>
       </div>
     </div>
   </div>
@@ -249,7 +249,17 @@
           <li class="no">Email support</li>
           <li class="no">SLA</li>
         </ul>
-        <a href="mailto:hello@veriflowlabs.co.uk?subject=Free API Key Request" class="btn-secondary" style="display:block;text-align:center;">Request free key</a>
+        <div id="signup-form">
+          <select id="signup-exp" style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.875rem;margin-bottom:.5rem;background:var(--bg);">
+            <option value="sanctions">Sanctions Screening</option>
+            <option value="postcode">Postcode Enrichment</option>
+            <option value="webhookq">Webhook Queue</option>
+            <option value="email">Email DNS Score</option>
+          </select>
+          <input id="signup-email" type="email" placeholder="you@company.com" style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.875rem;margin-bottom:.5rem;">
+          <button onclick="doSignup()" class="btn-secondary" style="width:100%;cursor:pointer;border:1px solid var(--border);">Get free API key</button>
+          <div id="signup-result" style="margin-top:.75rem;font-size:.8rem;display:none;"></div>
+        </div>
       </div>
 
       <div class="plan featured">
@@ -299,8 +309,8 @@
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
-        <h4>Request an API key</h4>
-        <p>Email us or sign up via the form. Your key arrives within one business day on the free tier.</p>
+        <h4>Get an API key</h4>
+        <p>Enter your email in the pricing section above. Your key is issued instantly — no credit card required.</p>
       </div>
       <div class="step">
         <div class="step-num">2</div>
@@ -336,5 +346,35 @@
   </div>
 </footer>
 
+<script>
+async function doSignup() {
+  const email = document.getElementById('signup-email').value.trim();
+  const experiment = document.getElementById('signup-exp').value;
+  const result = document.getElementById('signup-result');
+  if (!email || !email.includes('@')) {
+    result.style.display = 'block';
+    result.style.color = '#dc2626';
+    result.textContent = 'Please enter a valid email address.';
+    return;
+  }
+  result.style.display = 'block';
+  result.style.color = 'var(--muted)';
+  result.textContent = 'Generating key…';
+  try {
+    const r = await fetch('https://yield-system.fly.dev/signup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({experiment, email})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Request failed');
+    result.style.color = '#15803d';
+    result.innerHTML = `Your API key:<br><code style="user-select:all;word-break:break-all;font-size:.75rem;background:#f0fdf4;padding:.3rem .5rem;border-radius:4px;display:block;margin-top:.35rem;">${d.api_key}</code><span style="color:var(--muted);font-size:.75rem;">Pass this as the <strong>X-API-Key</strong> header on every request.</span>`;
+  } catch (e) {
+    result.style.color = '#dc2626';
+    result.textContent = 'Something went wrong. Email hello@veriflowlabs.co.uk for a key.';
+  }
+}
+</script>
 </body>
 </html>
