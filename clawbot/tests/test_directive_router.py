@@ -34,8 +34,12 @@ def make_router(bus, causal_store=None, task_store=None, brain=None):
     ts = task_store or MagicMock()
     if task_store is None:
         ts.create_task = MagicMock(return_value=str(uuid.uuid4()))
+    registry = MagicMock()
+    # registry.get must be async and return a truthy object so assign_task
+    # validation passes. Tasks assigned to non-existent agents raise ValueError.
+    registry.get = AsyncMock(return_value=MagicMock())
     return DirectiveRouter(
-        bus=bus, causal_store=cs, registry=MagicMock(),
+        bus=bus, causal_store=cs, registry=registry,
         agent_factory=MagicMock(), task_store=ts,
         metrics_dir=MagicMock(), brain=brain,
     )

@@ -14,6 +14,27 @@ _HEADERS = {
     "Accept": "text/html,text/plain,*/*",
 }
 
+# Prompt-injection defence — same threat model as opportunity_scanner.
+# Web pages can contain adversarial payloads ("ignore previous instructions")
+# that would flow through the brain into evolution mutation prompts.
+_INJECTION_PATTERNS = [
+    re.compile(r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+instructions"),
+    re.compile(r"(?i)disregard\s+(all\s+)?(previous|prior|above)"),
+    re.compile(r"(?i)you\s+are\s+now\s+"),
+    re.compile(r"(?i)new\s+(instructions|system\s+prompt|rules)"),
+    re.compile(r"(?i)(system|assistant|user)\s*:"),
+    re.compile(r"(?i)<\s*/?(system|instructions|prompt)\s*>"),
+    re.compile(r"(?i)```\s*system"),
+]
+
+
+def _sanitize(text: str) -> str:
+    """Strip prompt-injection markers from fetched web content."""
+    return "\n".join(
+        line for line in text.splitlines()
+        if not any(p.search(line) for p in _INJECTION_PATTERNS)
+    )
+
 
 def _strip_html(html: str) -> str:
     text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
@@ -28,13 +49,12 @@ def _strip_html(html: str) -> str:
 
 
 async def fetch_and_extract(url: str) -> str:
-    """Fetch URL and return extracted plaintext. Raises on HTTP error or timeout."""
+    """Fetch URL and return sanitized plaintext. Raises on HTTP error or timeout."""
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT_S, headers=_HEADERS, follow_redirects=True,
     ) as client:
         response = await client.get(url)
         response.raise_for_status()
     content_type = response.headers.get("content-type", "")
-    if "html" in content_type:
-        return _strip_html(response.text)
-    return response.text[:_MAX_CONTENT_CHARS]
+    raw = _strip_html(response.text) if "html" in content_type else response.text[:_MAX_CONTENT_CHARS]
+    return _sanitize(raw)

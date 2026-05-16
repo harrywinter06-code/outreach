@@ -89,7 +89,10 @@ class DirectiveRouter:
             return
 
         action = str(data.get("action", "")).strip().lower()
-        if not action:
+        # wait is a valid no-op: ack immediately, no CAG event.
+        # Recording depth-0 for every wait would inflate chain counts and
+        # let executives game attribution_rate by issuing cheap wait directives.
+        if not action or action == "wait":
             await self._bus.ack(topic, msg_id)
             return
 
@@ -161,6 +164,9 @@ class DirectiveRouter:
         description = str(data.get("description", data.get("directive", "")))[:1000]
         if not assigned_to:
             raise ValueError("assign_task missing assigned_to")
+        spec = await self._registry.get(assigned_to)
+        if spec is None:
+            raise ValueError(f"assign_task: agent '{assigned_to}' not found in registry")
         # TaskStore.create_task is synchronous — call without await
         self._task_store.create_task(
             title=title,

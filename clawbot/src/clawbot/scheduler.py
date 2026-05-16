@@ -234,6 +234,14 @@ class Scheduler:
 
     async def run_forever(self) -> None:
         logger.info("Scheduler starting")
+        # Subscribe to directive topics before any executive tasks start.
+        # Executive loops begin publishing immediately on their first cycle;
+        # if the subscription races ahead of the DirectiveRouter consumer-group
+        # creation, messages published before subscribe() completes are missed.
+        if self._causal_store is not None and self._registry is not None:
+            from clawbot.directive_router import DIRECTIVE_TOPICS
+            for topic in DIRECTIVE_TOPICS:
+                await self._bus.subscribe(topic)
         tasks = [
             asyncio.create_task(self._executive_loop(), name="executive-ceo"),
             asyncio.create_task(self._board_loop(), name="board"),
@@ -279,8 +287,6 @@ class Scheduler:
                 brain=self._brain,
             )
             tasks.append(asyncio.create_task(router.run(), name="directive-router"))
-            for topic in DIRECTIVE_TOPICS:
-                await self._bus.subscribe(topic)
         # Operator escalation: subscriber persists + pushes; reply poller republishes.
         tasks.append(asyncio.create_task(
             self._escalation_subscriber_loop(), name="escalation-subscriber"
@@ -1098,8 +1104,12 @@ class Scheduler:
             return
         try:
             from clawbot.gumroad import GumroadClient
+            from datetime import timedelta
             client = GumroadClient(api_key=settings.gumroad_api_key)
-            sales = await client.sales()
+            # Limit to 8-day window (attribution window + 1 day overlap) so we don't
+            # re-sum all-time sales on every hourly cycle. Closed chains are skipped
+            # by unattributed_sale_products, but fetching years of sales is wasteful.
+            sales = await client.sales(after=datetime.now(UTC) - timedelta(days=8))
             product_ids = list({s.product_id for s in sales if s.product_id})
             if not product_ids:
                 return
