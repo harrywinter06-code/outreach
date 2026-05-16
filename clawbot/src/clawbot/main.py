@@ -91,6 +91,7 @@ async def main() -> None:
         "operator.message",
         "ceo.cycle_start", "cfo.cycle_start", "cmo.cycle_start",
         "coo.cycle_start", "cto.cycle_start",
+        "brain.recall", "brain.write",
     ]
     for topic in topics:
         await bus.subscribe(topic)

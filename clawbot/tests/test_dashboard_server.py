@@ -1,7 +1,7 @@
 """Tests for EventBroadcaster and compute_links in dashboard.server."""
 import asyncio
 import pytest
-from clawbot.dashboard.server import EventBroadcaster, compute_links
+from clawbot.dashboard.server import EventBroadcaster, compute_links, _parse_directive_target, _build_flow_matrix
 
 
 class TestEventBroadcaster:
@@ -82,3 +82,38 @@ class TestComputeLinks:
         ]
         assert len(compute_links(nodes, threshold=0.71)) == 0
         assert len(compute_links(nodes, threshold=0.70)) == 1
+
+
+class TestParseDirectiveTarget:
+    def test_parses_to_field_from_json(self):
+        raw = '{"to": "cmo", "action": "Draft article", "priority": "high"}'
+        assert _parse_directive_target(raw) == "cmo"
+
+    def test_returns_none_for_missing_to(self):
+        raw = '{"action": "Do something", "priority": "low"}'
+        assert _parse_directive_target(raw) is None
+
+    def test_returns_none_for_invalid_json(self):
+        assert _parse_directive_target("not json at all") is None
+
+    def test_parses_from_markdown_fenced_json(self):
+        raw = '```json\n{"to": "cfo", "action": "Review budget"}\n```'
+        assert _parse_directive_target(raw) == "cfo"
+
+
+class TestBuildFlowMatrix:
+    def test_empty_flow(self):
+        result = _build_flow_matrix({})
+        assert result == {"edges": [], "total": 0}
+
+    def test_single_edge(self):
+        result = _build_flow_matrix({("ceo", "cmo"): 3})
+        assert result["total"] == 3
+        assert len(result["edges"]) == 1
+        assert result["edges"][0] == {"from": "ceo", "to": "cmo", "count": 3}
+
+    def test_multiple_edges_sorted_by_count(self):
+        flow = {("ceo", "cfo"): 1, ("ceo", "cmo"): 5, ("cfo", "cto"): 2}
+        result = _build_flow_matrix(flow)
+        counts = [e["count"] for e in result["edges"]]
+        assert counts == sorted(counts, reverse=True)

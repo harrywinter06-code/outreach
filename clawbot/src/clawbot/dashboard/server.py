@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, UTC, date
 from pathlib import Path
@@ -109,7 +110,7 @@ class BrainCache:
 WATCHED_STREAMS = [
     "ceo.cycle_start", "cfo.cycle_start", "cmo.cycle_start", "coo.cycle_start", "cto.cycle_start",
     "ceo.directive",   "cfo.directive",   "cmo.directive",   "coo.directive",   "cto.directive",
-    "operator.escalation",
+    "operator.escalation", "board.resolution", "brain.recall", "brain.write",
 ]
 _STREAM_PREFIX = "clawbot:bus"
 
@@ -129,12 +130,42 @@ def _extract_action(response_raw: str) -> str:
     return response_raw[:200]
 
 
+def _parse_directive_target(response_raw: str) -> str | None:
+    """Extract the 'to' field from an executive's JSON directive, or None."""
+    import re
+    try:
+        match = re.search(r"```(?:json)?\s*([\s\S]+?)```", response_raw)
+        blob = match.group(1) if match else response_raw
+        start, end = blob.find("{"), blob.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(blob[start: end + 1])
+            target = data.get("to")
+            if isinstance(target, str) and target:
+                return target.lower()
+    except Exception:
+        pass
+    return None
+
+
+def _build_flow_matrix(flow: dict[tuple[str, str], int]) -> dict[str, Any]:
+    edges = sorted(
+        [{"from": f, "to": t, "count": c} for (f, t), c in flow.items()],
+        key=lambda e: e["count"],
+        reverse=True,
+    )
+    return {"edges": edges, "total": sum(flow.values())}
+
+
 class RedisReader:
     """Tails watched Redis streams and fans events into the broadcaster."""
 
     def __init__(self, redis_url: str, broadcaster: EventBroadcaster) -> None:
         self._url = redis_url
         self._bc = broadcaster
+        self._flow: dict[tuple[str, str], int] = {}
+
+    def get_flow(self) -> dict[str, Any]:
+        return _build_flow_matrix(self._flow)
 
     async def run_forever(self) -> None:
         import redis.asyncio as aioredis
@@ -165,12 +196,17 @@ class RedisReader:
 
         elif topic.endswith(".directive"):
             agent = topic.split(".")[0]
-            action = _extract_action(payload.get("response", ""))
+            response_raw = payload.get("response", "")
+            action = _extract_action(response_raw)
+            target = _parse_directive_target(response_raw)
+            if target:
+                self._flow[(agent, target)] = self._flow.get((agent, target), 0) + 1
             await self._bc.broadcast({
                 "type": "cycle_complete",
                 "agent": agent,
                 "success": True,
                 "action": action,
+                "to": target or "",
                 "ts": payload.get("ts", ""),
             })
 
@@ -183,6 +219,28 @@ class RedisReader:
                 "ts": payload.get("ts", ""),
             })
 
+        elif topic == "board.resolution":
+            await self._bc.broadcast({
+                "type": "board_resolution",
+                "resolution": payload.get("resolution", payload.get("response", "")),
+                "ts": payload.get("ts", ""),
+            })
+
+        elif topic == "brain.recall":
+            await self._bc.broadcast({
+                "type": "brain_recall",
+                "node_ids": payload.get("node_ids", []),
+                "ts": payload.get("ts", ""),
+            })
+
+        elif topic == "brain.write":
+            await self._bc.broadcast({
+                "type": "brain_write",
+                "node_id": payload.get("node_id"),
+                "category": payload.get("category", "decision"),
+                "ts": payload.get("ts", ""),
+            })
+
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
@@ -192,6 +250,7 @@ _EXECUTIVES = ["ceo", "cfo", "cmo", "coo", "cto"]
 
 _broadcaster: EventBroadcaster | None = None
 _brain_cache: BrainCache | None = None
+_reader: "RedisReader | None" = None
 
 
 def create_app(db_pool: Any, redis_url: str) -> Any:
@@ -247,6 +306,54 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/api/signals")
+    async def signals() -> JSONResponse:
+        feed_path = _METRICS_DIR / "opportunity_feed.json"
+        if not feed_path.exists():
+            return JSONResponse({"opportunities": [], "last_scan": ""})
+        try:
+            return JSONResponse(json.loads(feed_path.read_text(encoding="utf-8")))
+        except Exception:
+            return JSONResponse({"opportunities": [], "last_scan": ""})
+
+    @app.get("/api/flow")
+    async def flow() -> JSONResponse:
+        if _reader is None:
+            return JSONResponse({"edges": [], "total": 0})
+        return JSONResponse(_reader.get_flow())
+
+    @app.post("/api/reply")
+    async def reply(request: Request) -> JSONResponse:
+        from clawbot.bus import MessageBus
+        body = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return JSONResponse({"ok": False, "error": "empty message"}, status_code=400)
+        bus = MessageBus(redis_url=redis_url)
+        await bus.connect()
+        await bus.subscribe("operator.message")
+        await bus.publish("operator.message", {
+            "message": message,
+            "ts": datetime.now(UTC).isoformat(),
+            "source": "dashboard",
+        })
+        await bus.close()
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/kill")
+    async def kill_on() -> JSONResponse:
+        kill_path = Path(os.environ.get("KILL_FILE_PATH", "/var/run/clawbot/clawbot.KILL"))
+        kill_path.parent.mkdir(parents=True, exist_ok=True)
+        kill_path.touch()
+        return JSONResponse({"ok": True, "armed": True})
+
+    @app.delete("/api/kill")
+    async def kill_off() -> JSONResponse:
+        kill_path = Path(os.environ.get("KILL_FILE_PATH", "/var/run/clawbot/clawbot.KILL"))
+        if kill_path.exists():
+            kill_path.unlink()
+        return JSONResponse({"ok": True, "armed": False})
+
     return app
 
 
@@ -296,11 +403,13 @@ def _build_state_snapshot() -> dict[str, Any]:
 
 async def start_dashboard(db_pool: Any, redis_url: str) -> None:
     """Launch FastAPI + background Redis reader as asyncio tasks."""
+    global _reader
     import uvicorn
 
     app = create_app(db_pool=db_pool, redis_url=redis_url)
     assert _broadcaster is not None
     reader = RedisReader(redis_url=redis_url, broadcaster=_broadcaster)
+    _reader = reader
 
     config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="warning", access_log=False)
     server = uvicorn.Server(config)

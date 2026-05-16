@@ -340,6 +340,11 @@ class Scheduler:
             return ""
         if not entries:
             return ""
+        await self._bus.publish("brain.recall", {
+            "node_ids": [e.id for e in entries],
+            "query_preview": query[:80],
+            "ts": datetime.now(UTC).isoformat(),
+        })
         return "\n\nRelevant prior decisions:\n" + "\n".join(
             f"- {e.content[:200]}" for e in entries
         )
@@ -349,7 +354,12 @@ class Scheduler:
         if self._brain is None or not response:
             return
         try:
-            await self._brain.write(response, category="decision")
+            node_id = await self._brain.write(response, category="decision")
+            await self._bus.publish("brain.write", {
+                "node_id": node_id,
+                "category": "decision",
+                "ts": datetime.now(UTC).isoformat(),
+            })
         except Exception as exc:
             logger.warning("Brain write failed (non-fatal): %s", exc)
 
