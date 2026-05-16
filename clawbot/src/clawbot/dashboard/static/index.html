@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clawbot HQ</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<style>
+:root {
+  --bg: #080c17;
+  --surface: rgba(255,255,255,0.035);
+  --border: rgba(255,255,255,0.07);
+  --cyan: #00d4ff;
+  --cyan-dim: rgba(0,212,255,0.12);
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --purple: #818cf8;
+  --blue: #60a5fa;
+  --orange: #fb923c;
+  --text: #e2e8f0;
+  --muted: #64748b;
+  --muted2: #1e293b;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:'Inter',system-ui,sans-serif;
+  height:100vh;overflow:hidden;
+  display:flex;flex-direction:column;
+  font-size:13px;line-height:1.4;
+}
+
+/* ── HEADER ─────────────────────────────────────────────────────── */
+header{
+  display:flex;align-items:center;gap:14px;
+  padding:10px 20px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+  background:rgba(8,12,23,0.92);
+  backdrop-filter:blur(16px);
+  position:relative;z-index:10;
+}
+.logo{
+  font-size:14px;font-weight:800;letter-spacing:.14em;
+  color:var(--text);text-transform:uppercase;
+}
+.logo em{color:var(--cyan);font-style:normal}
+.live-badge{
+  display:flex;align-items:center;gap:5px;
+  font-size:9px;font-weight:700;letter-spacing:.1em;
+  color:var(--green);text-transform:uppercase;
+}
+.live-dot{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--green);
+  box-shadow:0 0 6px var(--green);
+  animation:blink 2s infinite;
+}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.header-gap{flex:1}
+.revenue{
+  display:flex;flex-direction:column;align-items:flex-end;gap:1px;
+}
+.revenue-label{font-size:9px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.revenue-value{
+  font-size:22px;font-weight:800;color:var(--green);
+  font-variant-numeric:tabular-nums;
+  text-shadow:0 0 24px rgba(16,185,129,.35);
+  transition:color .4s;
+}
+.kill-clock{
+  display:flex;flex-direction:column;align-items:flex-end;gap:4px;
+  padding-left:14px;
+  border-left:1px solid var(--border);
+}
+.kill-label{font-size:9px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.kill-row{display:flex;align-items:center;gap:8px}
+.kill-day{font-size:13px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.kill-track{width:100px;height:3px;background:var(--muted2);border-radius:2px;overflow:hidden}
+.kill-fill{height:100%;border-radius:2px;background:var(--green);transition:width .6s,background .6s}
+
+/* ── MAIN GRID ──────────────────────────────────────────────────── */
+main{
+  flex:1;overflow:hidden;
+  display:grid;
+  grid-template-rows:148px 1fr;
+  grid-template-columns:1fr 360px;
+  gap:1px;
+  background:var(--border);
+}
+
+/* ── EXECUTIVE STRIP ────────────────────────────────────────────── */
+.exec-strip{
+  grid-column:1/-1;
+  display:flex;gap:1px;
+  background:var(--border);
+  overflow:hidden;
+}
+.exec-card{
+  flex:1;padding:14px 16px;
+  background:var(--bg);
+  display:flex;flex-direction:column;gap:7px;
+  position:relative;overflow:hidden;
+  transition:background .25s;
+}
+/* glow sweep when thinking */
+.exec-card::after{
+  content:'';
+  position:absolute;top:0;left:-100%;width:60%;height:100%;
+  background:linear-gradient(90deg,transparent,rgba(0,212,255,.06),transparent);
+  transition:none;
+}
+.exec-card.thinking::after{
+  animation:sweep 2s linear infinite;
+}
+@keyframes sweep{to{left:160%}}
+.exec-card.thinking{background:rgba(0,212,255,.03)}
+.exec-card.error{background:rgba(239,68,68,.03)}
+
+.card-top{display:flex;align-items:center;gap:7px}
+.card-id{
+  font-size:10px;font-weight:800;letter-spacing:.14em;
+  color:var(--muted);text-transform:uppercase;
+}
+.card-dot{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--muted2);flex-shrink:0;
+  transition:background .3s,box-shadow .3s;
+}
+.exec-card.thinking .card-dot{
+  background:var(--cyan);
+  box-shadow:0 0 8px var(--cyan);
+  animation:pulse-c 1s ease-in-out infinite;
+}
+.exec-card.success .card-dot{background:var(--green)}
+.exec-card.error .card-dot{background:var(--red);box-shadow:0 0 6px var(--red)}
+@keyframes pulse-c{0%,100%{opacity:1}50%{opacity:.3}}
+.card-timer{
+  margin-left:auto;font-size:10px;color:var(--muted);
+  font-variant-numeric:tabular-nums;
+}
+.card-action{
+  font-size:11px;color:var(--text);line-height:1.55;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+  overflow:hidden;opacity:.7;min-height:51px;flex:1;
+}
+.card-cycles{display:flex;gap:3px;align-items:center}
+.cdot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.cdot.ok{background:rgba(16,185,129,.7)}
+.cdot.fail{background:rgba(239,68,68,.8)}
+.cdot.unk{background:var(--muted2)}
+
+/* ── BRAIN ──────────────────────────────────────────────────────── */
+#brain-wrap{
+  background:var(--bg);position:relative;overflow:hidden;
+}
+.panel-label{
+  position:absolute;top:13px;left:16px;z-index:2;
+  font-size:9px;font-weight:700;letter-spacing:.12em;
+  color:var(--muted);text-transform:uppercase;
+}
+#brain-svg{width:100%;height:100%;display:block}
+.b-link{stroke:rgba(255,255,255,.07);fill:none}
+.b-node{cursor:pointer}
+#legend{
+  position:absolute;bottom:12px;left:16px;z-index:2;
+  display:flex;gap:10px;flex-wrap:wrap;
+}
+.leg{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted)}
+.leg-dot{width:7px;height:7px;border-radius:50%}
+#brain-count{
+  position:absolute;top:13px;right:16px;z-index:2;
+  font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums;
+}
+
+/* ── FEED ───────────────────────────────────────────────────────── */
+#feed-wrap{
+  background:var(--bg);display:flex;flex-direction:column;overflow:hidden;
+}
+#feed-wrap .panel-label{position:relative;top:auto;left:auto;padding:13px 16px 10px;flex-shrink:0;border-bottom:1px solid var(--border)}
+#feed{
+  flex:1;overflow-y:auto;padding:4px 0;
+  scrollbar-width:thin;scrollbar-color:var(--muted2) transparent;
+}
+.fi{
+  padding:9px 16px;border-left:2px solid transparent;
+  margin-bottom:1px;cursor:default;transition:background .15s;
+}
+.fi:hover{background:var(--surface)}
+.fi.esc-info{border-color:var(--blue)}
+.fi.esc-request{border-color:var(--amber)}
+.fi.esc-warning{border-color:var(--orange)}
+.fi.esc-urgent{border-color:var(--red)}
+.fi.dir{border-color:rgba(0,212,255,.5)}
+.fi.err{border-color:rgba(239,68,68,.5)}
+.fi-top{display:flex;gap:6px;align-items:baseline;margin-bottom:2px}
+.fi-time{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+.fi-agent{font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.badge{
+  font-size:8px;padding:1px 5px;border-radius:3px;
+  font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+}
+.b-req{background:rgba(245,158,11,.15);color:var(--amber)}
+.b-warn{background:rgba(251,146,60,.15);color:var(--orange)}
+.b-urg{background:rgba(239,68,68,.2);color:var(--red)}
+.b-info{background:rgba(96,165,250,.1);color:var(--blue)}
+.b-dir{background:rgba(0,212,255,.1);color:var(--cyan)}
+.b-err{background:rgba(239,68,68,.1);color:var(--red)}
+.fi-text{font-size:11px;color:var(--text);line-height:1.5;opacity:.75}
+
+/* ── TOOLTIP ────────────────────────────────────────────────────── */
+#tt{
+  position:fixed;z-index:200;pointer-events:none;display:none;
+  background:rgba(10,14,28,.96);border:1px solid var(--border);
+  border-radius:8px;padding:10px 13px;
+  font-size:11px;line-height:1.6;max-width:260px;
+  backdrop-filter:blur(16px);
+}
+.tt-cat{font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">CLAWBOT <em>LTD</em></div>
+  <div class="live-badge"><div class="live-dot"></div>Live</div>
+  <div class="header-gap"></div>
+  <div class="revenue">
+    <div class="revenue-label">7-day revenue</div>
+    <div class="revenue-value" id="rev">£0.00</div>
+  </div>
+  <div class="kill-clock">
+    <div class="kill-label">Kill clock</div>
+    <div class="kill-row">
+      <div class="kill-day" id="kill-day">Day 1 of 60</div>
+      <div class="kill-track"><div class="kill-fill" id="kill-fill" style="width:2%"></div></div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="exec-strip" id="strip"></div>
+  <div id="brain-wrap">
+    <div class="panel-label">Company Brain</div>
+    <div id="brain-count">0 memories</div>
+    <svg id="brain-svg"></svg>
+    <div id="legend"></div>
+  </div>
+  <div id="feed-wrap">
+    <div class="panel-label">Live Activity</div>
+    <div id="feed"></div>
+  </div>
+</main>
+
+<div id="tt"></div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────
+const AGENTS = ['ceo','cfo','cmo','coo','cto'];
+const ROLES  = {ceo:'Chief Executive',cfo:'Chief Financial',cmo:'Chief Marketing',coo:'Chief Operating',cto:'Chief Technology'};
+const CAT_COLOR = {
+  strategy:'#818cf8', opportunity:'#10b981', decision:'#fb923c',
+  metric:'#60a5fa', general:'#64748b'
+};
+const FOUNDED = new Date('2026-05-16T00:00:00Z');
+const MAX_FEED = 100;
+
+// ── Agent state ───────────────────────────────────────────────────
+const S = {};
+AGENTS.forEach(id => {
+  S[id] = {status:'idle', cycles:[], action:'Awaiting first cycle…', t0:0};
+});
+
+// ── Kill clock ────────────────────────────────────────────────────
+function tickKill() {
+  const day = Math.max(1, Math.floor((Date.now() - FOUNDED.getTime()) / 86400000) + 1);
+  const pct = Math.min(100, (day / 60) * 100);
+  document.getElementById('kill-day').textContent = `Day ${day} of 60`;
+  const fill = document.getElementById('kill-fill');
+  fill.style.width = pct + '%';
+  fill.style.background = pct < 50 ? '#10b981' : pct < 83 ? '#f59e0b' : '#ef4444';
+}
+tickKill();
+
+// ── Revenue ───────────────────────────────────────────────────────
+function setRev(v) {
+  document.getElementById('rev').textContent = '£' + parseFloat(v || 0).toFixed(2);
+}
+
+// ── Executive cards ───────────────────────────────────────────────
+function buildStrip() {
+  const strip = document.getElementById('strip');
+  strip.innerHTML = '';
+  AGENTS.forEach(id => {
+    const div = document.createElement('div');
+    div.className = 'exec-card';
+    div.id = 'card-' + id;
+    div.innerHTML = `
+      <div class="card-top">
+        <span class="card-id">${id.toUpperCase()}</span>
+        <span class="card-dot" id="dot-${id}"></span>
+        <span class="card-timer" id="timer-${id}"></span>
+      </div>
+      <div class="card-action" id="act-${id}">${esc(S[id].action)}</div>
+      <div class="card-cycles" id="cyc-${id}"></div>
+    `;
+    strip.appendChild(div);
+  });
+  AGENTS.forEach(renderCard);
+}
+
+function renderCard(id) {
+  const s = S[id];
+  const card = document.getElementById('card-' + id);
+  if (!card) return;
+  card.className = 'exec-card ' + s.status;
+  document.getElementById('act-' + id).innerHTML = esc(s.action);
+  const cyc = document.getElementById('cyc-' + id);
+  cyc.innerHTML = s.cycles.map(ok =>
+    `<div class="cdot ${ok===true?'ok':ok===false?'fail':'unk'}"></div>`
+  ).join('');
+}
+
+function updateTimers() {
+  AGENTS.forEach(id => {
+    const s = S[id];
+    const el = document.getElementById('timer-' + id);
+    if (!el) return;
+    if (s.status === 'thinking' && s.t0) {
+      el.textContent = Math.round((Date.now() - s.t0) / 1000) + 's';
+    } else {
+      el.textContent = '';
+    }
+  });
+}
+setInterval(updateTimers, 1000);
+
+// ── D3 Brain ──────────────────────────────────────────────────────
+const brainSvg = d3.select('#brain-svg');
+const wrap     = document.getElementById('brain-wrap');
+let W = wrap.clientWidth, H = wrap.clientHeight;
+
+const g = brainSvg.append('g').attr('transform','translate(0,30)');
+const Gl = g.append('g');
+const Gn = g.append('g');
+
+const sim = d3.forceSimulation()
+  .force('link', d3.forceLink().id(d => d.id).distance(60).strength(d => d.strength * 0.4))
+  .force('charge', d3.forceManyBody().strength(-100))
+  .force('center', d3.forceCenter(W / 2, (H - 40) / 2))
+  .force('collision', d3.forceCollide(13));
+
+let nodes = [], links = [];
+let Ls = Gl.selectAll('line'), Ns = Gn.selectAll('circle');
+
+function applyBrain(data) {
+  nodes = data.nodes || [];
+  links = data.links || [];
+  document.getElementById('brain-count').textContent = nodes.length + ' memories';
+
+  Ls = Gl.selectAll('line')
+    .data(links, d => d.source + '-' + d.target)
+    .join(
+      e => e.append('line').attr('class','b-link').attr('stroke-width', d => d.strength),
+      u => u,
+      x => x.remove()
+    );
+
+  Ns = Gn.selectAll('circle')
+    .data(nodes, d => d.id)
+    .join(
+      e => e.append('circle')
+          .attr('class','b-node')
+          .attr('r', 0)
+          .attr('fill', d => CAT_COLOR[d.category] || CAT_COLOR.general)
+          .attr('opacity', d => Math.max(0.25, 1 - d.age_days / 25))
+          .on('mouseover', showTip)
+          .on('mousemove', moveTip)
+          .on('mouseout', hideTip)
+          .call(e => e.transition().duration(700).attr('r', d => Math.max(4, 8 - d.age_days * 0.4))),
+      u => u.attr('fill', d => CAT_COLOR[d.category] || CAT_COLOR.general),
+      x => x.transition().duration(400).attr('r', 0).remove()
+    );
+
+  sim.nodes(nodes);
+  sim.force('link').links(links);
+  sim.alpha(0.45).restart();
+}
+
+sim.on('tick', () => {
+  Ls.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  Ns.attr('cx', d => clamp(d.x, 12, W - 12))
+    .attr('cy', d => clamp(d.y, 12, H - 52));
+});
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Zoom/pan
+brainSvg.call(d3.zoom().scaleExtent([0.3, 4]).on('zoom', e => g.attr('transform', e.transform)));
+
+// Legend
+function renderLegend() {
+  const leg = document.getElementById('legend');
+  leg.innerHTML = Object.entries(CAT_COLOR).map(([cat, col]) =>
+    `<div class="leg"><div class="leg-dot" style="background:${col}"></div>${cat}</div>`
+  ).join('');
+}
+renderLegend();
+
+// Tooltip
+const tt = document.getElementById('tt');
+function showTip(ev, d) {
+  tt.style.display = 'block';
+  const col = CAT_COLOR[d.category] || CAT_COLOR.general;
+  tt.innerHTML = `<div class="tt-cat" style="color:${col}">${d.category}</div>${esc(d.content_preview || '')}`;
+}
+function moveTip(ev) {
+  tt.style.left = (ev.clientX + 14) + 'px';
+  tt.style.top  = (ev.clientY - 10) + 'px';
+}
+function hideTip() { tt.style.display = 'none'; }
+
+// ── Activity feed ─────────────────────────────────────────────────
+const feed = document.getElementById('feed');
+
+function pushFeed(item) {
+  if (item.type === 'cycle_start' || item.type === 'heartbeat' || item.type === 'metrics') return;
+
+  const div = document.createElement('div');
+  const time = fmtTime(item.ts);
+  let cls = '', badge = '', text = '';
+
+  if (item.type === 'escalation') {
+    const sev = item.severity || 'info';
+    cls  = `fi esc-${sev}`;
+    badge = `<span class="badge b-${sev.slice(0,3)}">${sev}</span>`;
+    text  = item.summary || '';
+  } else if (item.type === 'cycle_complete') {
+    cls  = 'fi dir';
+    badge = '<span class="badge b-dir">directive</span>';
+    text  = item.action || 'cycle complete';
+  } else {
+    cls  = 'fi';
+    text  = item.summary || item.action || '';
+  }
+
+  div.className = cls;
+  div.innerHTML = `
+    <div class="fi-top">
+      <span class="fi-time">${time}</span>
+      <span class="fi-agent">${esc(item.from_agent || item.agent || '')}</span>
+      ${badge}
+    </div>
+    <div class="fi-text">${esc(text)}</div>
+  `;
+  feed.insertBefore(div, feed.firstChild);
+  while (feed.children.length > MAX_FEED) feed.removeChild(feed.lastChild);
+}
+
+function loadEscalations(list) {
+  [...list].reverse().forEach(e =>
+    pushFeed({type:'escalation', from_agent:e.from_agent, severity:e.severity, summary:e.summary, ts:e.ts})
+  );
+}
+
+// ── SSE event handling ────────────────────────────────────────────
+function onEvent(ev) {
+  if (ev.type === 'heartbeat') return;
+
+  if (ev.type === 'cycle_start') {
+    const s = S[ev.agent]; if (!s) return;
+    s.status = 'thinking'; s.t0 = Date.now();
+    renderCard(ev.agent);
+  }
+  if (ev.type === 'cycle_complete') {
+    const s = S[ev.agent]; if (!s) return;
+    s.status = ev.success ? 'success' : 'error';
+    s.t0 = 0;
+    if (ev.action) s.action = ev.action;
+    s.cycles = [...s.cycles.slice(-9), !!ev.success];
+    renderCard(ev.agent);
+    pushFeed(ev);
+    setTimeout(() => { s.status = 'idle'; renderCard(ev.agent); }, 3500);
+  }
+  if (ev.type === 'escalation') pushFeed(ev);
+  if (ev.type === 'metrics') setRev(ev.revenue_7d_gbp);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────
+buildStrip();
+
+fetch('/api/state').then(r => r.json()).then(st => {
+  Object.entries(st.agents || {}).forEach(([id, d]) => {
+    if (!S[id]) return;
+    S[id].cycles = d.cycles || [];
+    if (d.last_action) S[id].action = d.last_action;
+  });
+  buildStrip();
+  setRev((st.metrics || {}).revenue_7d_gbp || 0);
+  loadEscalations(st.recent_escalations || []);
+}).catch(() => {});
+
+function loadBrain() {
+  fetch('/api/brain').then(r => r.json()).then(applyBrain).catch(() => {});
+}
+loadBrain();
+setInterval(loadBrain, 30000);
+
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  es.onmessage = e => { try { onEvent(JSON.parse(e.data)); } catch {} };
+  es.onerror   = () => { es.close(); setTimeout(connectSSE, 3000); };
+}
+connectSSE();
+
+// Resize handler
+window.addEventListener('resize', () => {
+  W = wrap.clientWidth; H = wrap.clientHeight;
+  sim.force('center', d3.forceCenter(W/2, (H-40)/2)).alpha(0.1).restart();
+});
+
+// ── Utilities ─────────────────────────────────────────────────────
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtTime(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  catch { return String(ts).slice(11,19); }
+}
+</script>
+</body>
+</html>

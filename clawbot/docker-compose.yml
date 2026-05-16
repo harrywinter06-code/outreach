@@ -1,0 +1,63 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clawbot
+      POSTGRES_PASSWORD: clawbot
+      POSTGRES_DB: clawbot
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clawbot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - .:/app                              # full repo mount — CTO code changes persist on disk
+      - metrics_data:/metrics               # shared metrics volume
+      - ./kill:/var/run/clawbot             # bind-mount so operator can `touch ./kill/clawbot.KILL` from host
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://clawbot:clawbot@postgres:5432/clawbot
+      KILL_FILE_PATH: /var/run/clawbot/clawbot.KILL
+      GIT_AUTHOR_NAME: "CTO Agent"
+      GIT_AUTHOR_EMAIL: "cto@clawbot.internal"
+      GIT_COMMITTER_NAME: "CTO Agent"
+      GIT_COMMITTER_EMAIL: "cto@clawbot.internal"
+      PYTHONPATH: /app/src
+    command: /venv/bin/python -m clawbot.main
+
+volumes:
+  redis_data:
+  pg_data:
+  metrics_data:
+
+# VPS sizing: minimum Hetzner CX32 (4 vCPU, 8GB RAM)
+# CX22 (4GB) is insufficient with 3 concurrent Chromium instances (~500MB each)
+# + Python process (~300MB) + Redis (~100MB) + Postgres (~200MB) = ~2.5GB min
+# CX32 gives 5.5GB headroom for peak browser usage and OS
