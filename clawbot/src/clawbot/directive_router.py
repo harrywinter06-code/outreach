@@ -1,0 +1,218 @@
+"""
+Execution kernel — converts executive directives into real actions.
+
+Subscribes to all *.directive bus topics. For each message:
+1. Records a depth-0 chain event (executive issued directive)
+2. Parses the action field from the JSON response
+3. Dispatches to the registered handler
+4. Records a depth-1 chain event (action executed)
+5. Acks the message ONLY on full success (at-least-once delivery)
+
+At-least-once: handler failure leaves the message in the Redis pending list
+for the next poll. All handlers must be idempotent.
+Malformed JSON: acked immediately (retry is futile for parse errors).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from clawbot.json_util import extract_json
+
+if TYPE_CHECKING:
+    from clawbot.agent_factory import AgentFactory
+    from clawbot.agent_registry import AgentRegistry
+    from clawbot.bus import MessageBus
+    from clawbot.causal_store import CausalStore
+    from clawbot.company_brain import CompanyBrain
+    from clawbot.task_store import TaskStore
+
+logger = logging.getLogger(__name__)
+
+DIRECTIVE_TOPICS = [
+    "ceo.directive", "cfo.directive", "cmo.directive",
+    "coo.directive", "cto.directive",
+]
+_POLL_BLOCK_MS = 200
+_UNKNOWN_CHAIN = "00000000-0000-0000-0000-000000000000"
+
+
+class DirectiveRouter:
+    def __init__(
+        self,
+        bus: "MessageBus",
+        causal_store: "CausalStore",
+        registry: "AgentRegistry",
+        agent_factory: "AgentFactory",
+        task_store: "TaskStore",
+        metrics_dir: Path,
+        brain: "CompanyBrain | None" = None,
+    ) -> None:
+        self._bus = bus
+        self._causal_store = causal_store
+        self._registry = registry
+        self._factory = agent_factory
+        self._task_store = task_store
+        self._metrics_dir = metrics_dir
+        self._brain = brain
+
+    async def run(self) -> None:
+        """Continuous poll loop. Runs until cancelled."""
+        while True:
+            await self._poll_once()
+            await asyncio.sleep(0)
+
+    async def _poll_once(self) -> None:
+        for topic in DIRECTIVE_TOPICS:
+            try:
+                messages = await self._bus.read(
+                    topic, "directive-router", count=5, block_ms=_POLL_BLOCK_MS,
+                )
+            except Exception as exc:
+                logger.error("Bus read failed for topic %s: %s", topic, exc)
+                continue
+            for msg in messages:
+                await self._handle_message(topic, msg)
+
+    async def _handle_message(self, topic: str, msg: dict) -> None:
+        msg_id: str = msg["_id"]
+        chain_id: str = msg.get("chain_id") or _UNKNOWN_CHAIN
+        from_agent = topic.split(".")[0]
+
+        try:
+            data = extract_json(msg.get("response", ""))
+        except (ValueError, Exception):
+            logger.warning("DirectiveRouter: malformed JSON in %s — acking to clear", topic)
+            await self._bus.ack(topic, msg_id)
+            return
+
+        action = str(data.get("action", "")).strip().lower()
+        if not action:
+            await self._bus.ack(topic, msg_id)
+            return
+
+        # depth-0: executive issued this directive
+        try:
+            await self._causal_store.record_event(
+                chain_id=chain_id,
+                agent_id=from_agent,
+                action_type="directive",
+                causal_depth=0,
+            )
+        except Exception as exc:
+            logger.error("CAG depth-0 record failed for chain %s: %s", chain_id, exc)
+            return  # do NOT ack
+
+        handler = self._get_handler(action)
+        if handler is None:
+            logger.warning("DirectiveRouter: unknown action '%s' from %s", action, from_agent)
+            await self._bus.ack(topic, msg_id)
+            return
+
+        try:
+            await handler(data, chain_id, from_agent)
+            await self._causal_store.record_event(
+                chain_id=chain_id,
+                agent_id="router",
+                action_type=action,
+                causal_depth=1,
+                metadata={"directive": str(data.get("directive", ""))[:200]},
+            )
+            await self._bus.ack(topic, msg_id)
+        except Exception as exc:
+            logger.error("DirectiveRouter: handler '%s' failed for chain %s: %s", action, chain_id, exc)
+            # do NOT ack — stays in pending for retry
+
+    def _get_handler(self, action: str):
+        return {
+            "hire": self._handle_hire,
+            "fire": self._handle_fire,
+            "assign_task": self._handle_assign_task,
+            "publish_product": self._handle_publish_product,
+            "message": self._handle_message_action,
+            "web_research": self._handle_web_research,
+        }.get(action)
+
+    async def _handle_hire(self, data: dict, chain_id: str, from_agent: str) -> None:
+        role = str(data.get("role", data.get("directive", "analyst")))[:80]
+        mandate = str(data.get("mandate", data.get("directive", "Generate revenue.")))[:400]
+        supervisor = str(data.get("supervisor", from_agent))[:40]
+        pool = getattr(self._factory, "_pool", None)
+        await self._factory.spawn(
+            role=role,
+            supervisor=supervisor,
+            mandate=mandate,
+            pool=pool,
+        )
+        logger.info("Hired new agent: role=%s supervisor=%s", role, supervisor)
+
+    async def _handle_fire(self, data: dict, chain_id: str, from_agent: str) -> None:
+        agent_id = str(data.get("agent_id", data.get("directive", "")))[:60]
+        if not agent_id:
+            raise ValueError("fire action missing agent_id")
+        await self._factory.fire(agent_id)
+        logger.info("Fired agent: %s", agent_id)
+
+    async def _handle_assign_task(self, data: dict, chain_id: str, from_agent: str) -> None:
+        assigned_to = str(data.get("assigned_to", ""))[:60]
+        title = str(data.get("title", data.get("directive", "task")))[:120]
+        description = str(data.get("description", data.get("directive", "")))[:1000]
+        if not assigned_to:
+            raise ValueError("assign_task missing assigned_to")
+        # TaskStore.create_task is synchronous — call without await
+        self._task_store.create_task(
+            title=title,
+            description=description,
+            assigned_to=assigned_to,
+            chain_id=chain_id,
+        )
+        logger.info("Assigned task '%s' to %s", title, assigned_to)
+
+    async def _handle_publish_product(self, data: dict, chain_id: str, from_agent: str) -> None:
+        title = str(data.get("title", data.get("directive", "new product")))[:200]
+        description = str(data.get("description", ""))[:2000]
+        from clawbot.escalation import escalate
+        await escalate(
+            bus=self._bus,
+            severity="request",
+            summary=f"New product needs Gumroad listing: {title}",
+            detail=(
+                f"Product title: {title}\n\nDescription: {description}\n\n"
+                f"CAG chain_id: {chain_id}\n\n"
+                "Create this product at https://app.gumroad.com/products/new "
+                "then reply with: PRODUCT_URL:<url> CHAIN:<chain_id>"
+            ),
+            from_agent=from_agent,
+        )
+        logger.info("Escalated publish_product for '%s' (chain=%s)", title, chain_id)
+
+    async def _handle_message_action(self, data: dict, chain_id: str, from_agent: str) -> None:
+        target = str(data.get("target", data.get("assigned_to", "")))[:60]
+        content = str(data.get("message", data.get("directive", "")))[:1000]
+        if not target:
+            raise ValueError("message action missing target")
+        await self._bus.publish_inbox(
+            target,
+            {"from": from_agent, "message": content, "chain_id": chain_id},
+        )
+        logger.info("Sent message from %s to %s", from_agent, target)
+
+    async def _handle_web_research(self, data: dict, chain_id: str, from_agent: str) -> None:
+        from clawbot.web_researcher import fetch_and_extract
+        url = str(data.get("url", ""))[:500]
+        query = str(data.get("query", "web research"))[:200]
+        if not url:
+            raise ValueError("web_research missing url")
+        try:
+            content = await fetch_and_extract(url)
+        except Exception as exc:
+            raise RuntimeError(f"Web fetch failed for {url}: {exc}") from exc
+        if self._brain is not None:
+            await self._brain.write(
+                f"Web research [{query}] from {url}:\n{content}",
+                category="research",
+                metadata={"url": url, "query": query, "chain_id": chain_id},
+            )
+        logger.info("Web research complete: %s (%d chars)", url, len(content))
