@@ -874,7 +874,10 @@ class Scheduler:
                 from clawbot.fitness_writer import refresh_all_fitness
                 metrics = await self._load_metrics()
                 revenue = float(metrics.get("revenue_7d_gbp", 0.0))
-                results = refresh_all_fitness(self._metrics_dir, revenue)
+                results = await refresh_all_fitness(
+                    self._metrics_dir, revenue,
+                    causal_store=getattr(self, "_causal_store", None),
+                )
                 logger.info("Fitness refreshed for %d agents", len(results))
             except Exception as exc:
                 logger.error("Fitness writer cycle failed: %s", exc)
