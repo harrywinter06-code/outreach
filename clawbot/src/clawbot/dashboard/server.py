@@ -156,6 +156,77 @@ def _build_flow_matrix(flow: dict[tuple[str, str], int]) -> dict[str, Any]:
     return {"edges": edges, "total": sum(flow.values())}
 
 
+def _build_spend_payload(spent_usd: float, max_usd: float) -> dict[str, Any]:
+    pct = round(spent_usd / max_usd * 100, 1) if max_usd > 0 else 0.0
+    return {"spent_usd": round(spent_usd, 4), "max_usd": max_usd, "pct": pct}
+
+
+class SpendCache:
+    """Reads today's LLM spend from Redis. Cached 5 s to avoid hammering Redis."""
+
+    _TTL = 5.0
+    _SPEND_KEY_PREFIX = "clawbot:spend"
+
+    def __init__(self, redis_url: str, max_usd: float) -> None:
+        self._url = redis_url
+        self._max_usd = max_usd
+        self._cached_at: float = 0.0
+        self._data: dict[str, Any] = {"spent_usd": 0.0, "max_usd": max_usd, "pct": 0.0}
+
+    async def get(self) -> dict[str, Any]:
+        if time.monotonic() - self._cached_at < self._TTL:
+            return self._data
+        import redis.asyncio as aioredis
+        r = await aioredis.from_url(self._url, decode_responses=True)
+        try:
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            val = await r.hget(f"{self._SPEND_KEY_PREFIX}:{today}", "usd_total")
+            spent = float(val) if val else 0.0
+            self._data = _build_spend_payload(spent, self._max_usd)
+        except Exception as exc:
+            logger.warning("SpendCache read failed: %s", exc)
+        finally:
+            await r.aclose()
+        self._cached_at = time.monotonic()
+        return self._data
+
+
+class RevenueHistoryCache:
+    """Fetches 14-day per-day GBP revenue from Gumroad. Cached 10 min."""
+
+    _TTL = 600.0
+
+    def __init__(self, gumroad_api_key: str) -> None:
+        self._key = gumroad_api_key
+        self._cached_at: float = 0.0
+        self._data: list[dict[str, Any]] = []
+
+    async def get(self) -> list[dict[str, Any]]:
+        if time.monotonic() - self._cached_at < self._TTL:
+            return self._data
+        if not self._key:
+            from datetime import timedelta
+            today = date.today()
+            self._data = [
+                {"date": (today - timedelta(days=i)).isoformat(), "amount": 0.0}
+                for i in range(13, -1, -1)
+            ]
+            self._cached_at = time.monotonic()
+            return self._data
+        try:
+            from clawbot.gumroad import GumroadClient
+            client = GumroadClient(api_key=self._key)
+            by_day = await client.sales_by_day_gbp(days=14)
+            self._data = [
+                {"date": d, "amount": round(v, 2)}
+                for d, v in sorted(by_day.items())
+            ]
+        except Exception as exc:
+            logger.warning("RevenueHistoryCache fetch failed: %s", exc)
+        self._cached_at = time.monotonic()
+        return self._data
+
+
 class RedisReader:
     """Tails watched Redis streams and fans events into the broadcaster."""
 
@@ -251,12 +322,17 @@ _EXECUTIVES = ["ceo", "cfo", "cmo", "coo", "cto"]
 _broadcaster: EventBroadcaster | None = None
 _brain_cache: BrainCache | None = None
 _reader: "RedisReader | None" = None
+_spend_cache: SpendCache | None = None
+_revenue_history_cache: RevenueHistoryCache | None = None
 
 
 def create_app(db_pool: Any, redis_url: str) -> Any:
-    global _broadcaster, _brain_cache
+    global _broadcaster, _brain_cache, _spend_cache, _revenue_history_cache
+    from clawbot.config import settings
     _broadcaster = EventBroadcaster()
     _brain_cache = BrainCache(db_pool)
+    _spend_cache = SpendCache(redis_url=redis_url, max_usd=settings.max_daily_spend_usd)
+    _revenue_history_cache = RevenueHistoryCache(gumroad_api_key=settings.gumroad_api_key)
 
     from fastapi import FastAPI, Request
     from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
@@ -321,6 +397,18 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
         if _reader is None:
             return JSONResponse({"edges": [], "total": 0})
         return JSONResponse(_reader.get_flow())
+
+    @app.get("/api/spend")
+    async def spend() -> JSONResponse:
+        if _spend_cache is None:
+            return JSONResponse({"spent_usd": 0.0, "max_usd": 5.0, "pct": 0.0})
+        return JSONResponse(await _spend_cache.get())
+
+    @app.get("/api/revenue_history")
+    async def revenue_history() -> JSONResponse:
+        if _revenue_history_cache is None:
+            return JSONResponse([])
+        return JSONResponse(await _revenue_history_cache.get())
 
     @app.post("/api/reply")
     async def reply(request: Request) -> JSONResponse:

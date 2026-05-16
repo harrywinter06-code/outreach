@@ -1,7 +1,7 @@
 """Tests for EventBroadcaster and compute_links in dashboard.server."""
 import asyncio
 import pytest
-from clawbot.dashboard.server import EventBroadcaster, compute_links, _parse_directive_target, _build_flow_matrix
+from clawbot.dashboard.server import EventBroadcaster, compute_links, _parse_directive_target, _build_flow_matrix, _build_spend_payload
 
 
 class TestEventBroadcaster:
@@ -117,3 +117,20 @@ class TestBuildFlowMatrix:
         result = _build_flow_matrix(flow)
         counts = [e["count"] for e in result["edges"]]
         assert counts == sorted(counts, reverse=True)
+
+
+class TestBuildSpendPayload:
+    def test_zero_spend(self):
+        assert _build_spend_payload(0.0, 5.0) == {"spent_usd": 0.0, "max_usd": 5.0, "pct": 0.0}
+
+    def test_half_spent(self):
+        result = _build_spend_payload(2.5, 5.0)
+        assert result["pct"] == 50.0
+
+    def test_over_limit_allowed(self):
+        result = _build_spend_payload(6.0, 5.0)
+        assert result["pct"] == 120.0
+
+    def test_zero_max_does_not_divide_by_zero(self):
+        result = _build_spend_payload(1.0, 0.0)
+        assert result["pct"] == 0.0
