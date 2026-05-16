@@ -84,7 +84,7 @@ header{
 main{
   flex:1;overflow:hidden;
   display:grid;
-  grid-template-rows:148px 1fr;
+  grid-template-rows:148px auto 1fr;
   grid-template-columns:1fr 360px;
   gap:1px;
   background:var(--border);
@@ -151,6 +151,22 @@ main{
 .cdot.fail{background:rgba(239,68,68,.8)}
 .cdot.unk{background:var(--muted2)}
 
+/* ── FLOW ROW ────────────────────────────────────────────────────── */
+#flow-row{
+  grid-column:1/-1;
+  background:var(--bg);border-bottom:1px solid var(--border);
+  max-height:0;overflow:hidden;
+  transition:max-height .4s ease;
+}
+#flow-row.visible{max-height:72px}
+#flow-svg{display:block}
+
+/* ── COMMS OVERLAY ───────────────────────────────────────────────── */
+.exec-strip{position:relative}
+#flow-canvas{
+  position:absolute;inset:0;pointer-events:none;z-index:10;
+}
+
 /* ── BRAIN ──────────────────────────────────────────────────────── */
 #brain-wrap{
   background:var(--bg);position:relative;overflow:hidden;
@@ -208,6 +224,22 @@ main{
 .b-dir{background:rgba(0,212,255,.1);color:var(--cyan)}
 .b-err{background:rgba(239,68,68,.1);color:var(--red)}
 .fi-text{font-size:11px;color:var(--text);line-height:1.5;opacity:.75}
+
+/* ── SPEND GAUGE ────────────────────────────────────────────────── */
+.spend-gauge{
+  display:flex;flex-direction:column;align-items:flex-end;gap:4px;
+  padding-left:14px;border-left:1px solid var(--border);
+}
+.spend-label{font-size:9px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.spend-row{display:flex;align-items:center;gap:6px}
+.spend-val{font-size:11px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;min-width:44px;text-align:right}
+.spend-track{width:60px;height:3px;background:var(--muted2);border-radius:2px;overflow:hidden}
+.spend-fill{height:100%;border-radius:2px;background:var(--green);transition:width .6s,background .6s}
+.spend-max{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ── REVENUE SPARKLINE ───────────────────────────────────────────── */
+.rev-spark{display:flex;gap:2px;align-items:flex-end;height:18px;margin-top:3px}
+.rev-bar{width:5px;border-radius:1px 1px 0 0;transition:height .4s,background .4s;min-height:2px;cursor:default}
 
 /* ── KILL SWITCH ─────────────────────────────────────────────────── */
 #kill-btn{
@@ -310,12 +342,21 @@ main{
   <div class="revenue">
     <div class="revenue-label">7-day revenue</div>
     <div class="revenue-value" id="rev">£0.00</div>
+    <div class="rev-spark" id="rev-spark"></div>
   </div>
   <div class="kill-clock">
     <div class="kill-label">Kill clock</div>
     <div class="kill-row">
       <div class="kill-day" id="kill-day">Day 1 of 60</div>
       <div class="kill-track"><div class="kill-fill" id="kill-fill" style="width:2%"></div></div>
+    </div>
+  </div>
+  <div class="spend-gauge">
+    <div class="spend-label">Today's spend</div>
+    <div class="spend-row">
+      <div class="spend-val" id="spend-val">$0.00</div>
+      <div class="spend-track"><div class="spend-fill" id="spend-fill" style="width:0%"></div></div>
+      <div class="spend-max" id="spend-max">/$5.00</div>
     </div>
   </div>
   <button id="snd-btn" onclick="toggleSound()" style="
@@ -327,7 +368,12 @@ main{
 </header>
 
 <main>
-  <div class="exec-strip" id="strip"></div>
+  <div class="exec-strip" id="strip">
+    <canvas id="flow-canvas"></canvas>
+  </div>
+  <div id="flow-row">
+    <svg id="flow-svg" width="100%" height="70"></svg>
+  </div>
   <div id="brain-wrap">
     <div class="panel-label">Company Brain</div>
     <div id="brain-count">0 memories</div>
@@ -393,6 +439,33 @@ tickKill();
 // ── Revenue ───────────────────────────────────────────────────────
 function setRev(v) {
   document.getElementById('rev').textContent = '£' + parseFloat(v || 0).toFixed(2);
+}
+
+function updateSpend(d) {
+  if (!d) return;
+  const val  = document.getElementById('spend-val');
+  const fill = document.getElementById('spend-fill');
+  const max  = document.getElementById('spend-max');
+  if (val)  val.textContent = '$' + parseFloat(d.spent_usd || 0).toFixed(2);
+  if (max)  max.textContent = '/$' + parseFloat(d.max_usd || 5).toFixed(2);
+  const pct = Math.min(100, parseFloat(d.pct || 0));
+  if (fill) {
+    fill.style.width      = pct + '%';
+    fill.style.background = pct < 60 ? 'var(--green)' : pct < 85 ? 'var(--amber)' : 'var(--red)';
+  }
+}
+
+function renderSparkline(history) {
+  const wrap = document.getElementById('rev-spark');
+  if (!wrap || !history || !history.length) return;
+  const max = Math.max(...history.map(d => d.amount), 0.01);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  wrap.innerHTML = history.map(d => {
+    const h  = Math.max(2, Math.round((d.amount / max) * 16));
+    const isToday = d.date === todayStr;
+    const bg = isToday ? 'var(--cyan)' : d.amount > 0 ? 'rgba(16,185,129,.7)' : 'var(--muted2)';
+    return `<div class="rev-bar" style="height:${h}px;background:${bg}" title="${d.date}: £${d.amount.toFixed(2)}"></div>`;
+  }).join('');
 }
 
 // ── Executive cards ───────────────────────────────────────────────
@@ -515,6 +588,98 @@ function renderLegend() {
   ).join('');
 }
 renderLegend();
+
+// ── Directive flow arc diagram ────────────────────────────────────
+function renderFlowDiagram(data) {
+  const row = document.getElementById('flow-row');
+  const svg = document.getElementById('flow-svg');
+  if (!row || !svg) return;
+  const edges = (data && data.edges) || [];
+  if (!edges.length) { row.classList.remove('visible'); return; }
+  row.classList.add('visible');
+
+  const W = svg.clientWidth || svg.parentElement.clientWidth || 800;
+  const H = 70;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const agents = ['ceo','cfo','cmo','coo','cto'];
+  const cx = i => Math.round((i + 0.5) * W / agents.length);
+  const nodeY = 54;
+
+  let html = '';
+  for (const e of edges) {
+    const i = agents.indexOf(e.from), j = agents.indexOf(e.to);
+    if (i < 0 || j < 0) continue;
+    const x1 = cx(i), x2 = cx(j);
+    const midX = (x1 + x2) / 2;
+    const arcH  = 22 + Math.abs(x1 - x2) * 0.06;
+    const ctrlY = nodeY - arcH;
+    const w = Math.max(1, Math.log2(e.count + 1) * 1.4).toFixed(1);
+    html += `<path d="M${x1},${nodeY} Q${midX},${ctrlY} ${x2},${nodeY}" stroke="rgba(0,212,255,0.35)" stroke-width="${w}" fill="none"/>`;
+    html += `<text x="${midX}" y="${ctrlY - 4}" text-anchor="middle" font-size="9" fill="rgba(100,116,139,.85)">${e.count}</text>`;
+  }
+  for (let i = 0; i < agents.length; i++) {
+    html += `<circle cx="${cx(i)}" cy="${nodeY}" r="9" fill="var(--bg)" stroke="var(--border)" stroke-width="1"/>`;
+    html += `<text x="${cx(i)}" y="${nodeY + 4}" text-anchor="middle" font-size="8" fill="var(--muted)" font-weight="800" letter-spacing=".08em">${agents[i].toUpperCase()}</text>`;
+  }
+  svg.innerHTML = html;
+}
+
+function loadFlow() {
+  fetch('/api/flow').then(r => r.json()).then(renderFlowDiagram).catch(() => {});
+}
+loadFlow();
+setInterval(loadFlow, 30000);
+
+// ── Agent comms particle overlay ──────────────────────────────────
+const _particles = [];
+let _rafRunning = false;
+
+function animateFlow(fromAgent, toAgent) {
+  const fromCard = document.getElementById('card-' + fromAgent);
+  const toCard   = document.getElementById('card-' + toAgent);
+  const canvas   = document.getElementById('flow-canvas');
+  if (!fromCard || !toCard || !canvas) return;
+  canvas.width  = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  const cr = canvas.getBoundingClientRect();
+  const fr = fromCard.getBoundingClientRect();
+  const tr = toCard.getBoundingClientRect();
+  _particles.push({
+    x1: fr.left + fr.width / 2 - cr.left,
+    y1: fr.bottom - 8 - cr.top,
+    x2: tr.left + tr.width / 2 - cr.left,
+    y2: tr.bottom - 8 - cr.top,
+    start: performance.now(),
+    duration: 1100,
+  });
+  if (!_rafRunning) { _rafRunning = true; requestAnimationFrame(_drawParticles); }
+}
+
+function _drawParticles(now) {
+  const canvas = document.getElementById('flow-canvas');
+  if (!canvas) { _rafRunning = false; return; }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (let i = _particles.length - 1; i >= 0; i--) {
+    const p = _particles[i];
+    const t = Math.min(1, (now - p.start) / p.duration);
+    const mx = (p.x1 + p.x2) / 2;
+    const my = Math.min(p.y1, p.y2) - 32;
+    const x = (1-t)*(1-t)*p.x1 + 2*(1-t)*t*mx + t*t*p.x2;
+    const y = (1-t)*(1-t)*p.y1 + 2*(1-t)*t*my + t*t*p.y2;
+    const alpha = t < 0.75 ? 1 : (1 - t) / 0.25;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,212,255,${alpha.toFixed(2)})`;
+    ctx.shadowColor = '#00d4ff';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    if (t >= 1) _particles.splice(i, 1);
+  }
+  if (_particles.length > 0) requestAnimationFrame(_drawParticles);
+  else _rafRunning = false;
+}
 
 // Tooltip
 const tt = document.getElementById('tt');
@@ -658,6 +823,7 @@ function onEvent(ev) {
     renderCard(ev.agent);
     pushFeed(ev);
     SOUNDS.cycleComplete();
+    if (ev.to && ev.to !== ev.agent) animateFlow(ev.agent, ev.to);
     setTimeout(() => { s.status = 'idle'; renderCard(ev.agent); }, 3500);
   }
   if (ev.type === 'escalation') {
@@ -693,6 +859,18 @@ function loadBrain() {
 }
 loadBrain();
 setInterval(loadBrain, 30000);
+
+function loadSpend() {
+  fetch('/api/spend').then(r => r.json()).then(updateSpend).catch(() => {});
+}
+loadSpend();
+setInterval(loadSpend, 10000);
+
+function loadSparkline() {
+  fetch('/api/revenue_history').then(r => r.json()).then(renderSparkline).catch(() => {});
+}
+loadSparkline();
+setInterval(loadSparkline, 300000);
 
 function connectSSE() {
   const es = new EventSource('/api/events');
