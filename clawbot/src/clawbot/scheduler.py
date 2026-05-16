@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import traceback
+import uuid as _uuid
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,6 +71,21 @@ OPERATOR_INBOX_POLL_INTERVAL_S = 10        # chat-grade latency for inbound oper
 BRAIN_RETENTION_INTERVAL_S = 86_400        # daily prune of high-write brain categories
 BRAIN_MARKET_SIGNAL_MAX_AGE_DAYS = 14      # market signals decay fast; 14d is more than enough
 BRAIN_RECALL_MIN_QUERY_CHARS = 20          # below this, the query is too trivial for similarity to mean anything
+LATERAL_THINKER_INTERVAL_S = 7 * 86_400    # weekly
+
+_WAKEUP_FLOOR_S = 60
+_WAKEUP_CEILING_S = 1800
+_BUDGET_ANTIWINDUP_THRESHOLD = 0.70
+
+
+def _clamp_wakeup(wakeup_s: int | float, budget_fraction: float = 0.0) -> int:
+    """Clamp agent-declared wakeup interval within safe bounds.
+
+    Anti-windup: if daily budget consumption >= 70%, force maximum interval.
+    """
+    if budget_fraction >= _BUDGET_ANTIWINDUP_THRESHOLD:
+        return _WAKEUP_CEILING_S
+    return max(_WAKEUP_FLOOR_S, min(_WAKEUP_CEILING_S, int(wakeup_s)))
 
 
 def _is_skeleton_crew_hour(now: datetime | None = None) -> bool:
@@ -142,6 +158,16 @@ class Scheduler:
         # Without this, evolution and arbiter can both write production
         # SOUL.md concurrently and lose updates.
         self._soul_write_lock = asyncio.Lock()
+        self._next_wakeup_s: dict[str, int] = {}
+
+    async def _get_budget_fraction(self) -> float:
+        """Return fraction of daily spend limit consumed. Returns 0.0 on error."""
+        try:
+            spent = await self._monitor.daily_spend_usd()
+            from clawbot.config import settings
+            return spent / settings.max_daily_spend_usd
+        except Exception:
+            return 0.0
 
     async def run_forever(self) -> None:
         logger.info("Scheduler starting")
@@ -169,6 +195,9 @@ class Scheduler:
         if self._brain is not None:
             tasks.append(asyncio.create_task(
                 self._brain_retention_loop(), name="brain-retention"
+            ))
+            tasks.append(asyncio.create_task(
+                self._lateral_thinker_loop(), name="lateral-thinker"
             ))
         # Operator escalation: subscriber persists + pushes; reply poller republishes.
         tasks.append(asyncio.create_task(
@@ -212,10 +241,13 @@ class Scheduler:
         """CEO thinks every 10 min (or 60 min overnight 23:00–06:00 UTC)."""
         while True:
             await self._run_executive_cycle()
-            interval = (
-                EXECUTIVE_SKELETON_INTERVAL_S
-                if _is_skeleton_crew_hour()
-                else EXECUTIVE_PEAK_INTERVAL_S
+            budget_frac = await self._get_budget_fraction()
+            interval = _clamp_wakeup(
+                self._next_wakeup_s.get(
+                    "ceo",
+                    EXECUTIVE_SKELETON_INTERVAL_S if _is_skeleton_crew_hour() else EXECUTIVE_PEAK_INTERVAL_S,
+                ),
+                budget_fraction=budget_frac,
             )
             await asyncio.sleep(interval)
 
@@ -257,6 +289,12 @@ class Scheduler:
                 {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant},
             )
             await _maybe_escalate(self._bus, response, "ceo")
+            try:
+                _data = _extract_json(response)
+                _wakeup = int(_data.get("next_wakeup_s", EXECUTIVE_PEAK_INTERVAL_S))
+                self._next_wakeup_s["ceo"] = _clamp_wakeup(_wakeup)
+            except Exception:
+                pass
             success = True
         except Exception as exc:
             logger.error("Executive cycle failed (variant=%s): %s\n%s", variant, exc, traceback.format_exc())
@@ -370,10 +408,13 @@ class Scheduler:
         only the CEO ever thinks — the org chart is structural but single-handed."""
         while True:
             await self._run_lieutenant_cycle(agent_id)
-            interval = (
-                EXECUTIVE_SKELETON_INTERVAL_S
-                if _is_skeleton_crew_hour()
-                else EXECUTIVE_PEAK_INTERVAL_S
+            budget_frac = await self._get_budget_fraction()
+            interval = _clamp_wakeup(
+                self._next_wakeup_s.get(
+                    agent_id,
+                    EXECUTIVE_SKELETON_INTERVAL_S if _is_skeleton_crew_hour() else EXECUTIVE_PEAK_INTERVAL_S,
+                ),
+                budget_fraction=budget_frac,
             )
             await asyncio.sleep(interval)
 
@@ -410,6 +451,12 @@ class Scheduler:
                 {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant},
             )
             await _maybe_escalate(self._bus, response, agent_id)
+            try:
+                _data = _extract_json(response)
+                _wakeup = int(_data.get("next_wakeup_s", EXECUTIVE_PEAK_INTERVAL_S))
+                self._next_wakeup_s[agent_id] = _clamp_wakeup(_wakeup)
+            except Exception:
+                pass
             success = True
         except Exception as exc:
             logger.error("Lieutenant cycle failed (agent=%s, variant=%s): %s\n%s", agent_id, variant, exc, traceback.format_exc())
@@ -863,6 +910,23 @@ class Scheduler:
                     logger.info("Brain pruned %d stale market_signal entries", deleted)
             except Exception as exc:
                 logger.warning("Brain retention cycle failed: %s", exc)
+
+    # ── Lateral thinker (H4) ────────────────────────────────────────────────
+
+    async def _lateral_thinker_loop(self) -> None:
+        """Weekly cross-signal synthesis. Skipped if brain not wired."""
+        if self._brain is None:
+            return
+        from clawbot.lateral_thinker import LateralThinker
+        thinker = LateralThinker(pool=self._pool, brain=self._brain)
+        while True:
+            await asyncio.sleep(LATERAL_THINKER_INTERVAL_S)
+            try:
+                result = await thinker.synthesise()
+                if result:
+                    logger.info("Lateral thinker synthesis stored (%d chars)", len(result))
+            except Exception as exc:
+                logger.error("Lateral thinker cycle failed: %s", exc)
 
     # ── Fitness writer (Polish P1) ──────────────────────────────────────────
 
