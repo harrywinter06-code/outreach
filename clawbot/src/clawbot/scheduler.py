@@ -44,7 +44,9 @@ from clawbot.monitor import Monitor
 from clawbot.opportunity_scanner import OpportunityScanner, REDDIT_INTERVAL_S
 
 if TYPE_CHECKING:
+    from clawbot.causal_store import CausalStore
     from clawbot.homeostasis import Homeostasis
+    from clawbot.task_store import TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,31 @@ def _is_skeleton_crew_hour(now: datetime | None = None) -> bool:
     return hour >= 23 or hour < 6
 
 
+import re as _re
+
+
+def _parse_product_reply(reply: str) -> tuple[str | None, str | None]:
+    """Extract Gumroad product URL and chain_id from an operator reply string.
+
+    Expected format: PRODUCT_URL:<url> CHAIN:<chain_id>
+    Returns (url, chain_id) or (None, None) if format not matched.
+    """
+    url_match = _re.search(r"PRODUCT_URL:\s*(https?://\S+)", reply)
+    chain_match = _re.search(r"CHAIN:\s*(\S+)", reply)
+    if not url_match or not chain_match:
+        return None, None
+    return url_match.group(1).strip(), chain_match.group(1).strip()
+
+
+def _extract_gumroad_product_id(url: str) -> str | None:
+    """Extract Gumroad product ID from a product URL.
+
+    Gumroad URLs: https://gumroad.com/l/<id> or https://<seller>.gumroad.com/l/<id>
+    """
+    match = _re.search(r"/l/([a-zA-Z0-9_-]+)", url)
+    return match.group(1) if match else None
+
+
 def _extract_json(text: str) -> dict:
     """Return the first JSON object in text, stripping markdown fences if present."""
     import re
@@ -130,6 +157,38 @@ async def _maybe_escalate(bus: MessageBus, response: str | None, agent_id: str) 
         logger.warning("_maybe_escalate failed for %s: %s", agent_id, exc)
 
 
+async def _maybe_widget_update(response: str | None, agent_id: str, metrics_dir: Path) -> None:
+    """Parse executive JSON response for dashboard_widget field and upsert it."""
+    if not response:
+        return
+    try:
+        data = _extract_json(response)
+    except Exception:
+        return
+    raw = data.get("dashboard_widget")
+    if not raw or not isinstance(raw, dict):
+        return
+    widget_id = raw.get("id")
+    if not widget_id:
+        return
+    from clawbot.metrics import MetricsStore, DashboardWidget
+    try:
+        widget = DashboardWidget(
+            id=str(widget_id),
+            type=str(raw.get("type", "text")),
+            title=str(raw.get("title", "")),
+            agent=agent_id,
+            content=str(raw.get("content", "")),
+            value=float(raw.get("value", 0.0)),
+            unit=str(raw.get("unit", "")),
+            max_value=float(raw.get("max_value", 0.0)),
+            items=list(raw.get("items", [])),
+        )
+        MetricsStore(metrics_dir=metrics_dir).upsert_widget(widget)
+    except Exception as exc:
+        logger.warning("_maybe_widget_update failed for %s: %s", agent_id, exc)
+
+
 class Scheduler:
     def __init__(
         self,
@@ -138,9 +197,11 @@ class Scheduler:
         monitor: Monitor,
         registry: AgentRegistry | None = None,
         brain: CompanyBrain | None = None,
-        homeostasis: Homeostasis | None = None,
+        homeostasis: "Homeostasis | None" = None,
         agents_dir: Path = AGENTS_DIR,
         metrics_dir: Path = METRICS_DIR,
+        causal_store: "CausalStore | None" = None,
+        task_store: "TaskStore | None" = None,
     ) -> None:
         self._pool = pool
         self._bus = bus
@@ -150,6 +211,8 @@ class Scheduler:
         self._homeostasis = homeostasis
         self._agents_dir = agents_dir
         self._metrics_dir = metrics_dir
+        self._causal_store = causal_store
+        self._task_store = task_store
         self._agent_tasks: dict[str, asyncio.Task] = {}
         self._executive_cycle_counter: int = 0
         self._latest_resolution: dict | None = None
@@ -199,6 +262,25 @@ class Scheduler:
             tasks.append(asyncio.create_task(
                 self._lateral_thinker_loop(), name="lateral-thinker"
             ))
+        if self._causal_store is not None and self._registry is not None:
+            from clawbot.directive_router import DirectiveRouter, DIRECTIVE_TOPICS
+            from clawbot.agent_factory import AgentFactory
+            from clawbot.task_store import TaskStore
+            factory = AgentFactory(registry=self._registry, agents_dir=self._agents_dir)
+            factory._pool = self._pool
+            _task_store = self._task_store or TaskStore(self._metrics_dir / "tasks")
+            router = DirectiveRouter(
+                bus=self._bus,
+                causal_store=self._causal_store,
+                registry=self._registry,
+                agent_factory=factory,
+                task_store=_task_store,
+                metrics_dir=self._metrics_dir,
+                brain=self._brain,
+            )
+            tasks.append(asyncio.create_task(router.run(), name="directive-router"))
+            for topic in DIRECTIVE_TOPICS:
+                await self._bus.subscribe(topic)
         # Operator escalation: subscriber persists + pushes; reply poller republishes.
         tasks.append(asyncio.create_task(
             self._escalation_subscriber_loop(), name="escalation-subscriber"
@@ -270,12 +352,16 @@ class Scheduler:
                 "content": (
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}"
                     f"{board_directive}{recent_decisions}\n\n"
-                    "What is your next action? Output JSON: "
-                    '{"action": "...", "directive": "...", "priority": "high|medium|low", '
-                    '"escalate": null}'
-                    " — set escalate to "
-                    '{"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
-                    " whenever the operator needs to act or be informed."
+                    "What is your next action? Output JSON with one of these action schemas:\n"
+                    '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
+                    '| {"action": "fire", "agent_id": "..."} '
+                    '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
+                    '| {"action": "publish_product", "title": "...", "description": "..."} '
+                    '| {"action": "message", "target": "<agent_id>", "message": "..."} '
+                    '| {"action": "wait", "directive": "reason"}\n'
+                    'Add: "priority": "high|medium|low", "next_wakeup_s": <integer 60-1800> '
+                    "(how many seconds until your next cycle), "
+                    '"escalate": null | {"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
                 ),
             },
         ]
@@ -284,11 +370,13 @@ class Scheduler:
         success = False
         try:
             response = await self._pool.complete(messages, tier="executive")
+            chain_id = str(_uuid.uuid4())
             await self._bus.publish(
                 "ceo.directive",
-                {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant},
+                {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant, "chain_id": chain_id},
             )
             await _maybe_escalate(self._bus, response, "ceo")
+            await _maybe_widget_update(response, "ceo", self._metrics_dir)
             try:
                 _data = _extract_json(response)
                 _wakeup = int(_data.get("next_wakeup_s", EXECUTIVE_PEAK_INTERVAL_S))
@@ -433,12 +521,16 @@ class Scheduler:
                 "role": "user",
                 "content": (
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}\n\n"
-                    "What is your next action? Output JSON: "
-                    '{"action": "...", "directive": "...", "priority": "high|medium|low", '
-                    '"escalate": null}'
-                    " — set escalate to "
-                    '{"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
-                    " whenever the operator needs to act or be informed."
+                    "What is your next action? Output JSON with one of these action schemas:\n"
+                    '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
+                    '| {"action": "fire", "agent_id": "..."} '
+                    '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
+                    '| {"action": "publish_product", "title": "...", "description": "..."} '
+                    '| {"action": "message", "target": "<agent_id>", "message": "..."} '
+                    '| {"action": "wait", "directive": "reason"}\n'
+                    'Add: "priority": "high|medium|low", "next_wakeup_s": <integer 60-1800> '
+                    "(how many seconds until your next cycle), "
+                    '"escalate": null | {"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
                 ),
             },
         ]
@@ -446,11 +538,13 @@ class Scheduler:
         success = False
         try:
             response = await self._pool.complete(messages, tier="executive")
+            chain_id = str(_uuid.uuid4())
             await self._bus.publish(
                 f"{agent_id}.directive",
-                {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant},
+                {"response": response, "ts": datetime.now(UTC).isoformat(), "variant": variant, "chain_id": chain_id},
             )
             await _maybe_escalate(self._bus, response, agent_id)
+            await _maybe_widget_update(response, agent_id, self._metrics_dir)
             try:
                 _data = _extract_json(response)
                 _wakeup = int(_data.get("next_wakeup_s", EXECUTIVE_PEAK_INTERVAL_S))
@@ -734,6 +828,7 @@ class Scheduler:
                 name=f"agent-{spec.agent_id}",
             )
             self._agent_tasks[spec.agent_id] = task
+            await self._bus.subscribe(f"inbox.{spec.agent_id}")
 
         # Cancel tasks for agents that have been fired
         for agent_id in list(self._agent_tasks):
@@ -743,6 +838,7 @@ class Scheduler:
     async def _worker_agent_loop(self, spec: AgentSpec) -> None:
         """Run a single worker agent on its declared interval."""
         soul_path = self._resolve_soul_path(spec)
+        task_store = self._task_store
         while True:
             if not soul_path.exists():
                 logger.info("Worker %s SOUL.md missing — loop ending", spec.agent_id)
@@ -753,16 +849,49 @@ class Scheduler:
                 if _is_skeleton_crew_hour()
                 else spec.call_interval_s
             )
+
+            task_context = ""
+            if task_store is not None:
+                tasks = task_store.read_tasks(spec.agent_id)
+                if tasks:
+                    task_lines = "\n".join(
+                        f"- [{t['task_id'][:8]}] {t['title']}: {t['description'][:200]}"
+                        for t in tasks[:5]
+                    )
+                    task_context = f"\n\nYour pending tasks:\n{task_lines}"
+
+            inbox_context = ""
+            try:
+                inbox_msgs = await self._bus.read_and_ack(
+                    f"inbox.{spec.agent_id}",
+                    f"worker-{spec.agent_id}",
+                    count=5,
+                    block_ms=100,
+                )
+                if inbox_msgs:
+                    lines = "\n".join(
+                        f"- From {m.get('from', 'unknown')}: {m.get('message', '')[:200]}"
+                        for m in inbox_msgs
+                    )
+                    inbox_context = f"\n\nInbox messages:\n{lines}"
+            except Exception:
+                pass
+
             try:
                 tier = "executive" if spec.agent_id in EXECUTIVE_IDS else "worker"
                 response = await self._pool.complete(
                     [
                         {"role": "system", "content": soul},
-                        {"role": "user", "content": "What is your next action? Report result as JSON."},
+                        {"role": "user", "content": (
+                            f"What is your next action? Report result as JSON.{task_context}{inbox_context}"
+                        )},
                     ],
                     tier=tier,
                 )
-                await self._bus.publish(f"agent.{spec.agent_id}.output", {"result": response})
+                await self._bus.publish(
+                    f"agent.{spec.agent_id}.output",
+                    {"result": response, "agent_id": spec.agent_id},
+                )
             except Exception as exc:
                 logger.warning("Worker %s cycle failed: %s", spec.agent_id, exc)
             await asyncio.sleep(interval)
@@ -890,6 +1019,21 @@ class Scheduler:
                         "reply": reply.reply,
                     })
                     logger.info("Operator replied to %s: %s", reply.escalation_id, reply.reply[:120])
+                    reply_text = reply.reply
+                    if "PRODUCT_URL:" in reply_text and self._causal_store is not None:
+                        url, chain_id = _parse_product_reply(reply_text)
+                        if url and chain_id:
+                            product_id = _extract_gumroad_product_id(url)
+                            if product_id:
+                                try:
+                                    await self._causal_store.register_product(
+                                        gumroad_product_id=product_id,
+                                        chain_id=chain_id,
+                                        product_title=url,
+                                    )
+                                    logger.info("Registered product %s → chain %s", product_id, chain_id)
+                                except Exception as exc:
+                                    logger.error("Failed to register product: %s", exc)
             except Exception as exc:
                 logger.error("Operator reply loop failed: %s", exc)
 
@@ -943,8 +1087,35 @@ class Scheduler:
                     causal_store=getattr(self, "_causal_store", None),
                 )
                 logger.info("Fitness refreshed for %d agents", len(results))
+                if self._causal_store is not None:
+                    await self._attribute_recent_sales()
             except Exception as exc:
                 logger.error("Fitness writer cycle failed: %s", exc)
+
+    async def _attribute_recent_sales(self) -> None:
+        """Check Gumroad for recent sales; close chains for registered products."""
+        if not settings.gumroad_api_key:
+            return
+        try:
+            from clawbot.gumroad import GumroadClient
+            client = GumroadClient(api_key=settings.gumroad_api_key)
+            sales = await client.sales()
+            product_ids = list({s.product_id for s in sales if s.product_id})
+            if not product_ids:
+                return
+            pairs = await self._causal_store.unattributed_sale_products(product_ids)
+            for product_id, chain_id in pairs:
+                sale_total = sum(
+                    s.price_gbp for s in sales if s.product_id == product_id
+                )
+                if sale_total > 0:
+                    await self._causal_store.close_chain(chain_id, sale_total)
+                    logger.info(
+                        "Attributed £%.2f to chain %s (product %s)",
+                        sale_total, chain_id, product_id,
+                    )
+        except Exception as exc:
+            logger.warning("Sale attribution failed (non-fatal): %s", exc)
 
     # ── Exploration cycle (Polish P5) ───────────────────────────────────────
 

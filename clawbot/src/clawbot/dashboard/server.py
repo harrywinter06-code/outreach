@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import asdict
 from datetime import datetime, UTC, date
 from pathlib import Path
 from typing import Any
@@ -161,6 +162,19 @@ def _build_spend_payload(spent_usd: float, max_usd: float) -> dict[str, Any]:
     return {"spent_usd": round(spent_usd, 4), "max_usd": max_usd, "pct": pct}
 
 
+def _build_provider_health(name: str, rpm: int, max_rpm: int) -> dict[str, Any]:
+    pct = round(rpm / max_rpm * 100, 1) if max_rpm > 0 else 0.0
+    if rpm == 0:
+        status = "idle"
+    elif rpm >= max_rpm:
+        status = "limit"
+    elif pct >= 80:
+        status = "busy"
+    else:
+        status = "ok"
+    return {"name": name, "rpm": rpm, "max_rpm": max_rpm, "pct": pct, "status": status}
+
+
 class SpendCache:
     """Reads today's LLM spend from Redis. Cached 5 s to avoid hammering Redis."""
 
@@ -227,6 +241,37 @@ class RevenueHistoryCache:
         return self._data
 
 
+_PROVIDERS_TTL = 10.0
+
+
+class ProvidersCache:
+    def __init__(self, redis_url: str, providers: list[tuple[str, int]]) -> None:
+        self._redis_url = redis_url
+        self._providers = providers  # [(name, max_rpm)]
+        self._cache: list[dict] | None = None
+        self._fetched_at: float = 0.0
+
+    async def get(self) -> list[dict]:
+        if self._cache is not None and time.monotonic() - self._fetched_at < _PROVIDERS_TTL:
+            return self._cache
+        try:
+            import redis.asyncio as aioredis
+            r = await aioredis.from_url(self._redis_url, decode_responses=True)
+            now_minute = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+            results = []
+            for name, max_rpm in self._providers:
+                key = f"clawbot:ratelimit:{name}:{now_minute}"
+                val = await r.get(key)
+                rpm = int(val) if val else 0
+                results.append(_build_provider_health(name, rpm, max_rpm))
+            await r.aclose()
+            self._cache = results
+            self._fetched_at = time.monotonic()
+            return results
+        except Exception:
+            return self._cache or []
+
+
 class RedisReader:
     """Tails watched Redis streams and fans events into the broadcaster."""
 
@@ -234,9 +279,13 @@ class RedisReader:
         self._url = redis_url
         self._bc = broadcaster
         self._flow: dict[tuple[str, str], int] = {}
+        self._last_responses: dict[str, str] = {}
 
     def get_flow(self) -> dict[str, Any]:
         return _build_flow_matrix(self._flow)
+
+    def get_last_responses(self) -> dict[str, str]:
+        return dict(self._last_responses)
 
     async def run_forever(self) -> None:
         import redis.asyncio as aioredis
@@ -272,6 +321,8 @@ class RedisReader:
             target = _parse_directive_target(response_raw)
             if target:
                 self._flow[(agent, target)] = self._flow.get((agent, target), 0) + 1
+            if response_raw:
+                self._last_responses[agent] = response_raw
             await self._bc.broadcast({
                 "type": "cycle_complete",
                 "agent": agent,
@@ -291,11 +342,23 @@ class RedisReader:
             })
 
         elif topic == "board.resolution":
+            resolution_text = payload.get("resolution", payload.get("response", ""))
             await self._bc.broadcast({
                 "type": "board_resolution",
-                "resolution": payload.get("resolution", payload.get("response", "")),
+                "resolution": resolution_text,
                 "ts": payload.get("ts", ""),
             })
+            log_path = _METRICS_DIR / "board_log.jsonl"
+            entry = json.dumps({
+                "resolution": resolution_text,
+                "ts": payload.get("ts", ""),
+                "logged_at": datetime.now(UTC).isoformat(),
+            }) + "\n"
+            try:
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(entry)
+            except Exception:
+                pass
 
         elif topic == "brain.recall":
             await self._bc.broadcast({
@@ -324,15 +387,30 @@ _brain_cache: BrainCache | None = None
 _reader: "RedisReader | None" = None
 _spend_cache: SpendCache | None = None
 _revenue_history_cache: RevenueHistoryCache | None = None
+_providers_cache: ProvidersCache | None = None
+
+
+def _provider_max_rpm(name: str, settings: Any) -> int:
+    if name.startswith("nim"):
+        return int(settings.nim_rpm)
+    if name == "groq":
+        return int(settings.groq_rpm)
+    if name == "gemini":
+        return int(settings.gemini_rpm)
+    if name == "cerebras":
+        return int(settings.cerebras_rpm)
+    return 30
 
 
 def create_app(db_pool: Any, redis_url: str) -> Any:
-    global _broadcaster, _brain_cache, _spend_cache, _revenue_history_cache
+    global _broadcaster, _brain_cache, _spend_cache, _revenue_history_cache, _providers_cache
     from clawbot.config import settings
     _broadcaster = EventBroadcaster()
     _brain_cache = BrainCache(db_pool)
     _spend_cache = SpendCache(redis_url=redis_url, max_usd=settings.max_daily_spend_usd)
     _revenue_history_cache = RevenueHistoryCache(gumroad_api_key=settings.gumroad_api_key)
+    provider_pairs = [(name, _provider_max_rpm(name, settings)) for name in settings.active_provider_names]
+    _providers_cache = ProvidersCache(redis_url=redis_url, providers=provider_pairs)
 
     from fastapi import FastAPI, Request
     from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
@@ -441,6 +519,62 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
         if kill_path.exists():
             kill_path.unlink()
         return JSONResponse({"ok": True, "armed": False})
+
+    @app.get("/api/strategy")
+    async def strategy() -> JSONResponse:
+        path = _METRICS_DIR / "strategy_log.json"
+        if not path.exists():
+            return JSONResponse({"current_strategy": "undefined", "days_active": 0,
+                                 "pivot_count_this_month": 0})
+        try:
+            return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            return JSONResponse({"current_strategy": "undefined", "days_active": 0,
+                                 "pivot_count_this_month": 0})
+
+    @app.get("/api/assets")
+    async def assets() -> JSONResponse:
+        path = _METRICS_DIR / "compounding_assets.json"
+        if not path.exists():
+            return JSONResponse({"email_subscribers": 0, "content_pieces_published": 0,
+                                 "returning_customers": 0, "social_following": 0})
+        try:
+            return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            return JSONResponse({"email_subscribers": 0, "content_pieces_published": 0,
+                                 "returning_customers": 0, "social_following": 0})
+
+    @app.get("/api/providers")
+    async def providers() -> JSONResponse:
+        if _providers_cache is None:
+            return JSONResponse({"providers": []})
+        return JSONResponse({"providers": await _providers_cache.get()})
+
+    @app.get("/api/directives")
+    async def directives() -> JSONResponse:
+        if _reader is None:
+            return JSONResponse({"responses": {}})
+        return JSONResponse({"responses": _reader.get_last_responses()})
+
+    @app.get("/api/board_log")
+    async def board_log() -> JSONResponse:
+        path = _METRICS_DIR / "board_log.jsonl"
+        if not path.exists():
+            return JSONResponse({"entries": []})
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        entries = []
+        for line in lines[-50:]:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        return JSONResponse({"entries": list(reversed(entries))})
+
+    @app.get("/api/widgets")
+    async def widgets() -> JSONResponse:
+        from clawbot.metrics import MetricsStore
+        store = MetricsStore()
+        return JSONResponse({"widgets": [asdict(w) for w in store.get_widgets()]})
 
     return app
 

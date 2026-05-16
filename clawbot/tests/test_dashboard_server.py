@@ -1,7 +1,10 @@
 """Tests for EventBroadcaster and compute_links in dashboard.server."""
 import asyncio
 import pytest
-from clawbot.dashboard.server import EventBroadcaster, compute_links, _parse_directive_target, _build_flow_matrix, _build_spend_payload
+from clawbot.dashboard.server import (
+    EventBroadcaster, compute_links, _parse_directive_target,
+    _build_flow_matrix, _build_spend_payload, _build_provider_health,
+)
 
 
 class TestEventBroadcaster:
@@ -117,6 +120,40 @@ class TestBuildFlowMatrix:
         result = _build_flow_matrix(flow)
         counts = [e["count"] for e in result["edges"]]
         assert counts == sorted(counts, reverse=True)
+
+
+class TestBuildProviderHealth:
+    def test_zero_rpm_is_idle(self):
+        result = _build_provider_health("nim-1", 0, 40)
+        assert result["name"] == "nim-1"
+        assert result["rpm"] == 0
+        assert result["max_rpm"] == 40
+        assert result["status"] == "idle"
+
+    def test_low_load_is_ok(self):
+        result = _build_provider_health("groq", 10, 30)
+        assert result["status"] == "ok"
+
+    def test_high_load_is_busy(self):
+        result = _build_provider_health("nim-2", 32, 40)
+        assert result["status"] == "busy"
+
+    def test_at_limit_is_limit(self):
+        result = _build_provider_health("cerebras", 30, 30)
+        assert result["status"] == "limit"
+
+    def test_over_limit_is_limit(self):
+        result = _build_provider_health("nim-3", 45, 40)
+        assert result["status"] == "limit"
+
+    def test_pct_calculation(self):
+        result = _build_provider_health("groq", 15, 30)
+        assert result["pct"] == 50.0
+
+    def test_zero_max_rpm_does_not_divide_by_zero(self):
+        result = _build_provider_health("test", 0, 0)
+        assert result["pct"] == 0.0
+        assert result["status"] == "idle"
 
 
 class TestBuildSpendPayload:
