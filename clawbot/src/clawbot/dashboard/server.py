@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 from dataclasses import asdict
 from datetime import datetime, UTC, date
@@ -412,11 +413,23 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
     provider_pairs = [(name, _provider_max_rpm(name, settings)) for name in settings.active_provider_names]
     _providers_cache = ProvidersCache(redis_url=redis_url, providers=provider_pairs)
 
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
 
     app = FastAPI(docs_url=None, redoc_url=None)
+
+    _api_key = os.environ.get("DASHBOARD_API_KEY", "")
+    if not _api_key:
+        logger.warning("DASHBOARD_API_KEY not set — dashboard write endpoints are UNPROTECTED")
+
+    def _require_key(request: Request) -> None:
+        """Reject write/sensitive requests without a valid X-API-Key header."""
+        if not _api_key:
+            return  # unconfigured = local dev only; warned above
+        provided = request.headers.get("X-API-Key", "")
+        if not secrets.compare_digest(provided.encode(), _api_key.encode()):
+            raise HTTPException(status_code=401, detail="Invalid API key")
 
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -490,6 +503,7 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
 
     @app.post("/api/reply")
     async def reply(request: Request) -> JSONResponse:
+        _require_key(request)
         from clawbot.bus import MessageBus
         body = await request.json()
         message = str(body.get("message", "")).strip()
@@ -507,14 +521,16 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
         return JSONResponse({"ok": True})
 
     @app.post("/api/kill")
-    async def kill_on() -> JSONResponse:
+    async def kill_on(request: Request) -> JSONResponse:
+        _require_key(request)
         kill_path = Path(os.environ.get("KILL_FILE_PATH", "/var/run/clawbot/clawbot.KILL"))
         kill_path.parent.mkdir(parents=True, exist_ok=True)
         kill_path.touch()
         return JSONResponse({"ok": True, "armed": True})
 
     @app.delete("/api/kill")
-    async def kill_off() -> JSONResponse:
+    async def kill_off(request: Request) -> JSONResponse:
+        _require_key(request)
         kill_path = Path(os.environ.get("KILL_FILE_PATH", "/var/run/clawbot/clawbot.KILL"))
         if kill_path.exists():
             kill_path.unlink()
@@ -551,7 +567,8 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
         return JSONResponse({"providers": await _providers_cache.get()})
 
     @app.get("/api/directives")
-    async def directives() -> JSONResponse:
+    async def directives(request: Request) -> JSONResponse:
+        _require_key(request)
         if _reader is None:
             return JSONResponse({"responses": {}})
         return JSONResponse({"responses": _reader.get_last_responses()})
@@ -633,7 +650,7 @@ async def start_dashboard(db_pool: Any, redis_url: str) -> None:
     reader = RedisReader(redis_url=redis_url, broadcaster=_broadcaster)
     _reader = reader
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="warning", access_log=False)
+    config = uvicorn.Config(app, host="127.0.0.1", port=8080, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
 
     await asyncio.gather(server.serve(), reader.run_forever())
