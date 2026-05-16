@@ -154,11 +154,11 @@ class OpportunityScanner:
                     agent_id="scanner",
                     action_type="opportunity_discovered",
                     causal_depth=0,
-                    confidence=float(opp.get("confidence", 1.0)),
+                    confidence=float(opp.get("confidence", 0.0)),
                     metadata={"title": opp.get("title", "")},
                 )
             except Exception as exc:
-                logger.warning("CausalStore record_event failed: %s", exc)
+                logger.warning("CausalStore record_event failed (chain=%s): %s", chain_id, exc)
         if self._brain is not None:
             content = (
                 f"Opportunity: {opp.get('title', '')} — {opp.get('description', '')} "
