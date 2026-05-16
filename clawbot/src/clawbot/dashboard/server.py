@@ -650,7 +650,7 @@ async def start_dashboard(db_pool: Any, redis_url: str) -> None:
     reader = RedisReader(redis_url=redis_url, broadcaster=_broadcaster)
     _reader = reader
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=8080, log_level="warning", access_log=False)
+    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
 
     await asyncio.gather(server.serve(), reader.run_forever())

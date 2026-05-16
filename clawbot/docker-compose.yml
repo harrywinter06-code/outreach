@@ -26,6 +26,17 @@ services:
       timeout: 5s
       retries: 5
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - clawbot
+
   clawbot:
     build: .
     restart: unless-stopped
@@ -34,8 +45,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    ports:
-      - "127.0.0.1:8080:8080"
     env_file: .env
     volumes:
       - .:/app                              # full repo mount — CTO code changes persist on disk
@@ -56,6 +65,7 @@ volumes:
   redis_data:
   pg_data:
   metrics_data:
+  caddy_data:
 
 # VPS sizing: minimum Hetzner CX32 (4 vCPU, 8GB RAM)
 # CX22 (4GB) is insufficient with 3 concurrent Chromium instances (~500MB each)
