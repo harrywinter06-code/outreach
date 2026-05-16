@@ -15,7 +15,9 @@ from clawbot.homeostasis import Homeostasis
 from clawbot.llm_pool import LLMPool
 from clawbot.monitor import Monitor
 from clawbot.dashboard.server import start_dashboard
-from clawbot.scheduler import AGENTS_DIR, Scheduler
+from clawbot.causal_store import CausalStore
+from clawbot.task_store import TaskStore
+from clawbot.scheduler import AGENTS_DIR, METRICS_DIR, Scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,12 +83,16 @@ async def main() -> None:
         registry.connect(), db.connect(), homeostasis.connect(),
     )
     await db.init_schema()
+    causal_store = CausalStore(pool=db.pool)
+    task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)
 
     brain = CompanyBrain(pool=db.pool)
 
     topics = [
-        "ceo.directive", "board.resolution", "coo.task", "cmo.campaign",
+        "ceo.directive", "cfo.directive", "cmo.directive",
+        "coo.directive", "cto.directive",
+        "board.resolution", "coo.task", "cmo.campaign",
         "code.change_request", "operator.escalation", "operator.reply",
         "operator.message",
         "ceo.cycle_start", "cfo.cycle_start", "cmo.cycle_start",
@@ -99,6 +105,7 @@ async def main() -> None:
     scheduler = Scheduler(
         pool=pool, bus=bus, monitor=monitor,
         registry=registry, brain=brain, homeostasis=homeostasis,
+        causal_store=causal_store, task_store=task_store,
     )
     try:
         await asyncio.gather(
