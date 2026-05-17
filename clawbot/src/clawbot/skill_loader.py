@@ -40,15 +40,9 @@ def _walk_imports(tree: ast.AST) -> Iterable[str]:
                 yield node.module.split(".")[0]
 
 
-def _has_meta_and_run(tree: ast.AST) -> tuple[bool, ast.AsyncFunctionDef | None, bool]:
-    """Return (has_meta, async_run_fn, has_sync_run).
-
-    has_sync_run is True when a sync `def run` exists but no async one does,
-    which lets the caller produce a more specific error message.
-    """
+def _has_meta_and_run(tree: ast.AST) -> tuple[bool, ast.AsyncFunctionDef | None]:
     has_meta = False
     run_fn: ast.AsyncFunctionDef | None = None
-    has_sync_run = False
     for node in tree.body:  # type: ignore[attr-defined]
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -56,9 +50,7 @@ def _has_meta_and_run(tree: ast.AST) -> tuple[bool, ast.AsyncFunctionDef | None,
                     has_meta = True
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "run":
             run_fn = node
-        if isinstance(node, ast.FunctionDef) and node.name == "run":
-            has_sync_run = True
-    return has_meta, run_fn, has_sync_run
+    return has_meta, run_fn
 
 
 def scan_skill_source(source: str) -> None:
@@ -72,13 +64,11 @@ def scan_skill_source(source: str) -> None:
         if mod not in ALLOWED_IMPORTS:
             raise SkillValidationError(f"forbidden import: {mod}")
 
-    has_meta, run_fn, has_sync_run = _has_meta_and_run(tree)
+    has_meta, run_fn = _has_meta_and_run(tree)
     if not has_meta:
         raise SkillValidationError("skill must define META dict at module level")
     if run_fn is None:
-        # Produce a message matching the test regex "run.* async.*ctx" whether
-        # a sync `run` exists or the function is missing entirely.
-        raise SkillValidationError("run must be async and take ctx as first arg")
+        raise SkillValidationError("skill must define `async def run(ctx, ...)` at module level")
     if not run_fn.args.args or run_fn.args.args[0].arg != "ctx":
         raise SkillValidationError("run must be async and take ctx as first arg")
 
