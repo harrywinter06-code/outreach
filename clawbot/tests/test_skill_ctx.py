@@ -30,7 +30,7 @@ def test_skill_call_record_immutable():
 
 
 import asyncio
-from clawbot.skill_ctx import SkillCtx, make_noop_ctx
+from clawbot.skill_ctx import make_noop_ctx
 
 def test_noop_ctx_exposes_all_surfaces():
     ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
