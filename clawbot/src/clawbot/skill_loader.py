@@ -68,7 +68,7 @@ def scan_skill_source(source: str) -> None:
     if not has_meta:
         raise SkillValidationError("skill must define META dict at module level")
     if run_fn is None:
-        raise SkillValidationError("skill must define `async def run(ctx, ...)` at module level")
+        raise SkillValidationError("run must be async and take ctx as first arg")
     if not run_fn.args.args or run_fn.args.args[0].arg != "ctx":
         raise SkillValidationError("run must be async and take ctx as first arg")
 
