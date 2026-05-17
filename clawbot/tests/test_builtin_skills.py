@@ -19,7 +19,7 @@ EXPECTED_BUILTINS = {
     "http_fetch", "http_post", "llm_complete", "vector_search", "vector_write",
     "secret_get", "fs_read", "fs_write", "fs_list", "sql_query",
     "operator_message", "operator_request_approval", "time_now", "bus_publish",
-    "worker_spawn", "worker_fire",
+    "worker_spawn", "worker_fire", "skill_request",
 }
 
 
@@ -70,3 +70,19 @@ def test_worker_fire_publishes_to_bus(builtin_registry):
     topic, payload = ctx.bus.publish.call_args.args
     assert topic == "agent.fire_request"
     assert payload["agent_id"] == "researcher-001"
+
+
+def test_skill_request_publishes(builtin_registry):
+    from unittest.mock import AsyncMock
+    ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
+    ctx.bus.publish = AsyncMock(return_value="id")  # type: ignore[method-assign]
+    record = asyncio.run(builtin_registry.call("skill_request", {
+        "name": "weather", "description": "fetch weather",
+        "params_schema": {"city": "str"}, "returns_schema": {"temp_c": "float"},
+        "example_call": {"city": "London"},
+    }, ctx))
+    assert record.ok is True
+    topic, payload = ctx.bus.publish.call_args.args
+    assert topic == "skill.request"
+    assert payload["name"] == "weather"
+    assert payload["requested_by"] == "cto"
