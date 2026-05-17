@@ -44,3 +44,40 @@ def test_noop_http_get_returns_empty():
     ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
     result = asyncio.run(ctx.http.get("https://example.com"))
     assert result == {"status": 200, "text": "", "headers": {}}
+
+
+from unittest.mock import AsyncMock, MagicMock
+from clawbot.skill_ctx import make_live_ctx
+
+def test_live_ctx_passes_caller_id():
+    pool = MagicMock()
+    pool.complete = AsyncMock(return_value="hi")
+    bus = MagicMock()
+    bus.publish = AsyncMock(return_value="msg-id")
+    brain = MagicMock()
+    brain.recall = AsyncMock(return_value=[])
+    brain.write = AsyncMock(return_value="vec-id")
+    db_pool = MagicMock()
+    escalation = MagicMock()
+    escalation.notify = AsyncMock()
+    secret_allowlist = ["FOO"]
+
+    ctx = make_live_ctx(
+        caller_id="worker-1", budget_usd=0.50,
+        llm_pool=pool, bus=bus, brain=brain, db_pool=db_pool,
+        escalation=escalation, secret_allowlist=secret_allowlist,
+        workspace_root="/tmp/clawbot-workspace",
+    )
+    assert ctx.caller_id == "worker-1"
+    assert ctx.budget_usd == 0.50
+
+def test_live_secret_rejects_non_allowlisted():
+    ctx = make_live_ctx(
+        caller_id="w", budget_usd=0,
+        llm_pool=MagicMock(), bus=MagicMock(), brain=MagicMock(),
+        db_pool=MagicMock(), escalation=MagicMock(),
+        secret_allowlist=["FOO"], workspace_root="/tmp/x",
+    )
+    import pytest
+    with pytest.raises(PermissionError, match="not allowlisted"):
+        ctx.secret.get("BAR")
