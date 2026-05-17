@@ -38,6 +38,11 @@ class SkillRegistry:
         self._archive_dir = archive_dir
         self._skills: dict[str, _LoadedSkill] = {}
         self._stats: dict[str, _SkillStats] = {}
+        self._stats_db: Any | None = None
+
+    def set_stats_db(self, db_pool: Any) -> None:
+        """Wire a database pool so every skill call is recorded in skill_calls."""
+        self._stats_db = db_pool
 
     def discover(self) -> None:
         """Scan skills_dir, load every passing skill, log every failure."""
@@ -117,6 +122,28 @@ class SkillRegistry:
         skill = self._skills.get(name)
         return skill.meta if skill else None
 
+    async def _record_db_stat(self, record: SkillCallRecord) -> None:
+        """Insert a row into skill_calls. Swallows all errors to never break callers."""
+        if self._stats_db is None:
+            return
+        try:
+            async with self._stats_db.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO skill_calls
+                        (skill_name, caller_id, ok, cost_usd, latency_ms, error)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    record.skill_name,
+                    record.caller_id,
+                    record.ok,
+                    record.cost_usd,
+                    record.latency_ms,
+                    record.error,
+                )
+        except Exception as exc:
+            logger.warning("skill_calls INSERT failed: %s", exc)
+
     async def call(
         self,
         name: str,
@@ -163,6 +190,7 @@ class SkillRegistry:
             )
 
         start = time.monotonic()
+        record: SkillCallRecord
         try:
             result = await asyncio.wait_for(
                 skill.run(ctx, **params),
@@ -170,7 +198,7 @@ class SkillRegistry:
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
             if not isinstance(result, dict):
-                return SkillCallRecord(
+                record = SkillCallRecord(
                     skill_name=name,
                     caller_id=ctx.caller_id,
                     params=params,
@@ -180,30 +208,32 @@ class SkillRegistry:
                     ok=False,
                     error=f"skill returned non-dict: {type(result).__name__}",
                 )
-            missing_fields = [f for f in skill.meta.returns if f not in result]
-            if missing_fields:
-                return SkillCallRecord(
-                    skill_name=name,
-                    caller_id=ctx.caller_id,
-                    params=params,
-                    result=None,
-                    cost_usd=0.0,
-                    latency_ms=elapsed_ms,
-                    ok=False,
-                    error=f"missing return field: {missing_fields[0]}",
-                )
-            return SkillCallRecord(
-                skill_name=name,
-                caller_id=ctx.caller_id,
-                params=params,
-                result=result,
-                cost_usd=skill.meta.cost_estimate_usd,
-                latency_ms=elapsed_ms,
-                ok=True,
-                error=None,
-            )
+            else:
+                missing_fields = [f for f in skill.meta.returns if f not in result]
+                if missing_fields:
+                    record = SkillCallRecord(
+                        skill_name=name,
+                        caller_id=ctx.caller_id,
+                        params=params,
+                        result=None,
+                        cost_usd=0.0,
+                        latency_ms=elapsed_ms,
+                        ok=False,
+                        error=f"missing return field: {missing_fields[0]}",
+                    )
+                else:
+                    record = SkillCallRecord(
+                        skill_name=name,
+                        caller_id=ctx.caller_id,
+                        params=params,
+                        result=result,
+                        cost_usd=skill.meta.cost_estimate_usd,
+                        latency_ms=elapsed_ms,
+                        ok=True,
+                        error=None,
+                    )
         except asyncio.TimeoutError:
-            return SkillCallRecord(
+            record = SkillCallRecord(
                 skill_name=name,
                 caller_id=ctx.caller_id,
                 params=params,
@@ -214,7 +244,7 @@ class SkillRegistry:
                 error=f"timeout after {skill.meta.timeout_s}s",
             )
         except Exception as exc:
-            return SkillCallRecord(
+            record = SkillCallRecord(
                 skill_name=name,
                 caller_id=ctx.caller_id,
                 params=params,
@@ -224,6 +254,9 @@ class SkillRegistry:
                 ok=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
+        self._record_live_call(name, record.ok)
+        await self._record_db_stat(record)
+        return record
 
     async def run_watcher(self) -> None:
         """Poll skills_dir for changes; reload on add/modify/delete. Runs forever."""

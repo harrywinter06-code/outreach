@@ -566,6 +566,37 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
             return JSONResponse({"providers": []})
         return JSONResponse({"providers": await _providers_cache.get()})
 
+    @app.get("/api/skills")
+    async def skills() -> JSONResponse:
+        """Aggregate skill_calls for the last 7 days, grouped by skill name."""
+        try:
+            rows = await db_pool.fetch("""
+                SELECT
+                    skill_name,
+                    COUNT(*)                                    AS total_calls,
+                    SUM(CASE WHEN ok THEN 1 ELSE 0 END)        AS ok_calls,
+                    SUM(CASE WHEN NOT ok THEN 1 ELSE 0 END)    AS error_calls,
+                    ROUND(AVG(latency_ms)::numeric, 0)::int    AS avg_latency_ms,
+                    ROUND(SUM(cost_usd)::numeric, 6)           AS total_cost_usd,
+                    MAX(called_at)                             AS last_called_at
+                FROM skill_calls
+                WHERE called_at >= NOW() - INTERVAL '7 days'
+                GROUP BY skill_name
+                ORDER BY total_calls DESC
+            """)
+            skills_data = [dict(r) for r in rows]
+            # Convert non-serialisable types (Decimal, datetime) to str/float
+            for row in skills_data:
+                for k, v in row.items():
+                    if hasattr(v, "isoformat"):
+                        row[k] = v.isoformat()
+                    elif hasattr(v, "__float__"):
+                        row[k] = float(v)
+            return JSONResponse({"skills": skills_data})
+        except Exception as exc:
+            logger.warning("GET /api/skills failed: %s", exc)
+            return JSONResponse({"skills": []})
+
     @app.get("/api/directives")
     async def directives(request: Request) -> JSONResponse:
         _require_key(request)

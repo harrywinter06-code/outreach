@@ -95,3 +95,19 @@ class Database:
                 registered_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS skill_calls (
+                id          BIGSERIAL PRIMARY KEY,
+                skill_name  TEXT NOT NULL,
+                caller_id   TEXT NOT NULL,
+                ok          BOOLEAN NOT NULL,
+                cost_usd    DOUBLE PRECISION NOT NULL DEFAULT 0,
+                latency_ms  INT NOT NULL DEFAULT 0,
+                error       TEXT,
+                called_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await self._pool.execute("""
+            CREATE INDEX IF NOT EXISTS idx_skill_calls_name_time
+            ON skill_calls (skill_name, called_at DESC)
+        """)
