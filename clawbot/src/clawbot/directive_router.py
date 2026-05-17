@@ -278,6 +278,24 @@ class DirectiveRouter:
 
         record = await REGISTRY.call(skill_name, params, ctx)
 
+        # Only record live calls for actual execution attempts (not param-validation rejections).
+        _is_param_error = record.error is not None and record.error.startswith("missing required param")
+        if not _is_param_error:
+            REGISTRY._record_live_call(skill_name, record.ok)
+        if not record.ok and not _is_param_error and REGISTRY.is_canary(skill_name):
+            logger.warning("Canary failure for %s — demoting", skill_name)
+            REGISTRY.demote_on_canary_failure(skill_name, reason=record.error or "unknown")
+            await self._bus.publish_inbox(from_agent, {
+                "from": f"skill:{skill_name}",
+                "ok": False,
+                "message": (
+                    f"Skill {skill_name} failed canary and was demoted. "
+                    "Author a replacement via skill_request."
+                ),
+                "chain_id": chain_id,
+            })
+            return
+
         if record.ok:
             summary = str(record.result)[:1500]
             await self._bus.publish_inbox(from_agent, {

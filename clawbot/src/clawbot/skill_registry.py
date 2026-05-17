@@ -25,10 +25,19 @@ class _LoadedSkill:
     source_path: Path
 
 
+@dataclass
+class _SkillStats:
+    first_live_call_at: float = 0.0
+    live_call_count: int = 0
+    live_failure_count: int = 0
+
+
 class SkillRegistry:
-    def __init__(self, skills_dir: Path) -> None:
+    def __init__(self, skills_dir: Path, archive_dir: Path | None = None) -> None:
         self._dir = skills_dir
+        self._archive_dir = archive_dir
         self._skills: dict[str, _LoadedSkill] = {}
+        self._stats: dict[str, _SkillStats] = {}
 
     def discover(self) -> None:
         """Scan skills_dir, load every passing skill, log every failure."""
@@ -64,6 +73,42 @@ class SkillRegistry:
         )
         self._skills[meta.name] = _LoadedSkill(meta=meta, run=ns["run"], source_path=path)
         logger.info("skill loaded: %s (%s)", meta.name, path)
+
+    def _record_live_call(self, name: str, ok: bool) -> None:
+        s = self._stats.setdefault(name, _SkillStats())
+        if s.live_call_count == 0:
+            s.first_live_call_at = time.monotonic()
+        s.live_call_count += 1
+        if not ok:
+            s.live_failure_count += 1
+
+    def is_canary(self, name: str) -> bool:
+        """True if skill has fewer than 3 successful live calls."""
+        s = self._stats.get(name)
+        if s is None:
+            return True
+        return (s.live_call_count - s.live_failure_count) < 3
+
+    def demote_on_canary_failure(self, name: str, reason: str) -> None:
+        """Move a failed-canary skill out of live and into archive."""
+        loaded = self._skills.get(name)
+        if loaded is None:
+            return
+        if self._archive_dir is not None:
+            from datetime import datetime, UTC
+            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            archive_path = self._archive_dir / f"{name}-{ts}.canary_failed.py"
+            try:
+                original = loaded.source_path.read_text(encoding="utf-8")
+                archive_path.write_text(
+                    f"# DEMOTED: canary failure — {reason}\n{original}",
+                    encoding="utf-8",
+                )
+                loaded.source_path.unlink()
+            except Exception as exc:
+                logger.error("demote_on_canary_failure: archive write failed: %s", exc)
+        del self._skills[name]
+        logger.warning("skill demoted (canary failure): %s — %s", name, reason)
 
     def list_names(self) -> list[str]:
         return sorted(self._skills.keys())
