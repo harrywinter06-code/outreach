@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_SERVICE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _RESERVED_NAMES = frozenset({"ctx", "run", "META", "self", "cls"})
 
 
@@ -330,6 +331,8 @@ import os
 import logging as _stdlib_logging
 from datetime import datetime, UTC
 from pathlib import Path
+
+logger = _stdlib_logging.getLogger(__name__)
 
 import httpx
 
@@ -822,11 +825,15 @@ class _LiveAccounts:
     async def create_account(
         self, *, service: str, signup_url: str, notes: str = "",
     ) -> dict[str, Any]:
+        if not _SERVICE_NAME_RE.match(service):
+            raise ValueError(
+                f"service {service!r} must match {_SERVICE_NAME_RE.pattern!r}"
+            )
         import secrets as _secrets
         import json as _json
 
         timestamp = int(datetime.now(UTC).timestamp())
-        alias = f"{service}-{timestamp}"
+        alias = f"{service}-{timestamp}-{_secrets.token_hex(4)}"
         email_addr = f"{alias}@{self._email_domain}"
         password = _secrets.token_hex(16)
 
@@ -864,26 +871,40 @@ class _LiveAccounts:
             return {"status": "zombie", "service": service, "email": email_addr,
                     "reason": "verification timeout"}
 
+        # NOTE: verification.url may come from attacker-influenced mail. A
+        # caller-side domain allowlist would tighten this, but v1 relies on the
+        # alias-isolation in EmailReader plus browser-use's per-task sandbox.
+        # TODO(security): allowlist verification.url netloc against signup_url netloc.
+        verify_result: dict[str, Any] = {}
         if verification.url:
-            await self._browser.run(
+            verify_result = await self._browser.run(
                 task=f"Open URL {verification.url} to complete signup verification. "
                      f"Return resulting storage_state.",
                 max_steps=10,
             )
         elif verification.code:
-            await self._browser.run(
+            verify_result = await self._browser.run(
                 task=f"On the current page, enter the verification code {verification.code}. "
                      f"Return resulting storage_state.",
                 max_steps=10,
             )
 
-        storage_state = self._extract_storage_state(browser_result.get("output", ""))
+        # Prefer storage_state from the post-verification call (real session
+        # cookies live here). Fall back to the signup-call output if the
+        # verification step didn't emit one.
+        storage_state = self._extract_storage_state(verify_result.get("output", ""))
+        if storage_state is None:
+            storage_state = self._extract_storage_state(browser_result.get("output", ""))
         cookies_json = _json.dumps(storage_state) if storage_state else ""
         if storage_state:
             try:
                 self._profiles.save(service, storage_state)
-            except ValueError:
-                pass
+            except ValueError as exc:
+                logger.warning(
+                    "profile_save_rejected service=%s reason=%s — "
+                    "account vaulted but next login will not benefit from saved state",
+                    service, exc,
+                )
 
         self._vault.store(
             service=service, email=email_addr, password=password,
@@ -918,8 +939,9 @@ class _LiveAccounts:
         return {"service": service, "email": email, "status": "zombie", "reason": reason}
 
     async def _poll_verification(self, alias: str) -> Any:
-        deadline = asyncio.get_event_loop().time() + self._verify_timeout
-        while asyncio.get_event_loop().time() < deadline:
+        import time as _time
+        deadline = _time.monotonic() + self._verify_timeout
+        while _time.monotonic() < deadline:
             result = await self._email_reader.find_verification(
                 alias=alias, since_minutes=10,
             )

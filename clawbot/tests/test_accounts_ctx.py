@@ -172,3 +172,104 @@ def test_live_accounts_list_and_get_decrypt(tmp_path):
     one = asyncio.run(live.get_account(service="s", email="e@x.com"))
     assert one is not None
     assert one["password"] == "pw"
+
+
+def test_live_accounts_rejects_invalid_service_name(tmp_path):
+    """Service name with invalid chars must be rejected before any side effects."""
+    from unittest.mock import AsyncMock
+    from cryptography.fernet import Fernet
+    from clawbot.skill_ctx import _LiveAccounts
+    from clawbot.accounts_store import AccountsStore
+    from clawbot.profile_store import ProfileStore
+
+    vault = AccountsStore(db_path=str(tmp_path / "v.db"),
+                          encryption_key=Fernet.generate_key().decode())
+    vault.init_schema()
+    profiles = ProfileStore(root=str(tmp_path / "p"))
+
+    live = _LiveAccounts(
+        vault=vault, profiles=profiles,
+        browser=AsyncMock(), email_reader=AsyncMock(),
+        email_domain="example.com",
+    )
+    import pytest
+    with pytest.raises(ValueError, match="service"):
+        asyncio.run(live.create_account(
+            service="../etc/passwd", signup_url="https://example.com",
+        ))
+    # No vault row created — validation runs before any state change
+    assert vault.list_accounts() == []
+
+
+def test_live_accounts_alias_has_random_suffix(tmp_path):
+    """Two signups for same service in same second must produce different aliases."""
+    from unittest.mock import AsyncMock
+    from cryptography.fernet import Fernet
+    from clawbot.skill_ctx import _LiveAccounts
+    from clawbot.accounts_store import AccountsStore
+    from clawbot.profile_store import ProfileStore
+    from clawbot.email_reader import VerificationResult
+
+    vault = AccountsStore(db_path=str(tmp_path / "v.db"),
+                          encryption_key=Fernet.generate_key().decode())
+    vault.init_schema()
+    profiles = ProfileStore(root=str(tmp_path / "p"))
+
+    fake_browser = AsyncMock()
+    fake_browser.run = AsyncMock(return_value={
+        "success": True, "output": '{"cookies":[]}', "error": "", "task": "",
+    })
+    fake_email = AsyncMock()
+    fake_email.find_verification = AsyncMock(return_value=VerificationResult(
+        url="https://x/verify", code=None,
+    ))
+
+    live = _LiveAccounts(
+        vault=vault, profiles=profiles,
+        browser=fake_browser, email_reader=fake_email,
+        email_domain="example.com",
+    )
+    r1 = asyncio.run(live.create_account(service="substack", signup_url="https://substack.com"))
+    r2 = asyncio.run(live.create_account(service="substack", signup_url="https://substack.com"))
+    assert r1["email"] != r2["email"]
+
+
+def test_live_accounts_extracts_storage_state_from_verify_step(tmp_path):
+    """The post-verification browser output is the source of truth for cookies."""
+    from unittest.mock import AsyncMock
+    from cryptography.fernet import Fernet
+    from clawbot.skill_ctx import _LiveAccounts
+    from clawbot.accounts_store import AccountsStore
+    from clawbot.profile_store import ProfileStore
+    from clawbot.email_reader import VerificationResult
+
+    vault = AccountsStore(db_path=str(tmp_path / "v.db"),
+                          encryption_key=Fernet.generate_key().decode())
+    vault.init_schema()
+    profiles = ProfileStore(root=str(tmp_path / "p"))
+
+    fake_browser = AsyncMock()
+    # First call (signup): no state. Second call (verify): real cookies.
+    fake_browser.run = AsyncMock(side_effect=[
+        {"success": True, "output": "signup submitted", "error": "", "task": ""},
+        {"success": True,
+         "output": '{"cookies":[{"name":"session","value":"real_token"}]}',
+         "error": "", "task": ""},
+    ])
+    fake_email = AsyncMock()
+    fake_email.find_verification = AsyncMock(return_value=VerificationResult(
+        url="https://x/verify", code=None,
+    ))
+
+    live = _LiveAccounts(
+        vault=vault, profiles=profiles,
+        browser=fake_browser, email_reader=fake_email,
+        email_domain="example.com",
+    )
+    result = asyncio.run(live.create_account(service="substack", signup_url="https://x"))
+
+    assert result["status"] == "live"
+    rec = vault.get(service="substack", email=result["email"])
+    assert rec is not None
+    # cookies_json must come from the verify-step output, not the signup-step output
+    assert "real_token" in rec.cookies_json
