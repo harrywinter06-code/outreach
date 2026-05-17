@@ -33,6 +33,7 @@ class AccountsStore:
     def init_schema(self) -> None:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
                     service TEXT NOT NULL,
@@ -108,16 +109,33 @@ class AccountsStore:
         ]
 
     def mark_zombie(self, *, service: str, email: str, reason: str) -> None:
+        """Mark an account as zombie. Appends `reason` to existing notes
+        (preserves operator annotations) and raises KeyError if the row
+        does not exist (silent no-ops on typos are a footgun)."""
         with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                "UPDATE accounts SET status='zombie', notes=? WHERE service=? AND email=?",
-                (reason, service, email),
+            cur = conn.execute(
+                """
+                UPDATE accounts
+                   SET status='zombie',
+                       notes = CASE
+                           WHEN notes = '' THEN ?
+                           ELSE notes || ' | ' || ?
+                       END
+                 WHERE service=? AND email=?
+                """,
+                (reason, reason, service, email),
             )
+            if cur.rowcount == 0:
+                raise KeyError(f"no account for ({service!r}, {email!r})")
 
     def update_cookies(self, *, service: str, email: str, cookies_json: str) -> None:
+        """Update cookies for an existing account; raises KeyError if absent."""
         now = datetime.now(UTC).isoformat()
         with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                "UPDATE accounts SET cookies_enc=?, last_login_iso=? WHERE service=? AND email=?",
+            cur = conn.execute(
+                "UPDATE accounts SET cookies_enc=?, last_login_iso=? "
+                "WHERE service=? AND email=?",
                 (self._enc(cookies_json), now, service, email),
             )
+            if cur.rowcount == 0:
+                raise KeyError(f"no account for ({service!r}, {email!r})")

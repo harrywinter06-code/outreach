@@ -65,3 +65,36 @@ def test_record_account_dataclass_shape():
         notes="",
     )
     assert rec.service == "s"
+
+
+def test_update_cookies_changes_value_and_timestamp(vault: AccountsStore):
+    vault.store(service="s", email="e@x.com", password="p", cookies_json="old")
+    before = vault.get(service="s", email="e@x.com")
+    assert before is not None
+    vault.update_cookies(service="s", email="e@x.com", cookies_json="new")
+    after = vault.get(service="s", email="e@x.com")
+    assert after is not None
+    assert after.cookies_json == "new"
+    # last_login_iso is touched by update_cookies
+    assert after.last_login_iso >= before.last_login_iso
+
+
+def test_update_cookies_raises_on_missing_account(vault: AccountsStore):
+    with pytest.raises(KeyError, match="no account"):
+        vault.update_cookies(service="missing", email="x@x.com", cookies_json="{}")
+
+
+def test_mark_zombie_raises_on_missing_account(vault: AccountsStore):
+    with pytest.raises(KeyError, match="no account"):
+        vault.mark_zombie(service="missing", email="x@x.com", reason="r")
+
+
+def test_mark_zombie_preserves_creation_notes(vault: AccountsStore):
+    vault.store(service="s", email="e@x.com", password="p", cookies_json="",
+                notes="created by CMO")
+    vault.mark_zombie(service="s", email="e@x.com", reason="captcha failure")
+    rec = vault.get(service="s", email="e@x.com")
+    assert rec is not None
+    assert "created by CMO" in rec.notes
+    assert "captcha failure" in rec.notes
+    assert rec.status == "zombie"
