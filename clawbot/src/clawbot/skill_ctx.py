@@ -559,7 +559,12 @@ class _LivePayments:
             },
             metadata={"agent_id": agent_id},
         )
-        return card.to_dict()
+        result = card.to_dict()
+        # Defensive: strip full PAN/CVC fields in case a future caller adds
+        # ?expand=number,cvc. Last4 / expiry are safe to return.
+        for sensitive in ("number", "cvc"):
+            result.pop(sensitive, None)
+        return result
 
     async def freeze_card(self, *, card_id: str) -> dict[str, Any]:
         card = await asyncio.to_thread(
@@ -568,10 +573,13 @@ class _LivePayments:
         return card.to_dict()
 
     async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        # Use .data (first page) rather than auto_paging_iter — the iterator
+        # would call Stripe repeatedly even though we slice to `limit` at the
+        # end. limit is also passed to the API so the page size matches.
         auths = await asyncio.to_thread(
             stripe.issuing.Authorization.list, card=card_id, limit=limit,  # type: ignore[union-attr]
         )
-        return [a.to_dict() for a in auths.auto_paging_iter()][:limit]
+        return [a.to_dict() for a in auths.data]
 
 
 class _LiveSocial:

@@ -75,19 +75,43 @@ def test_live_freeze_card_cancels_via_update():
     assert result["status"] == "canceled"
 
 
-def test_live_list_authorizations_paginates():
+def test_live_list_authorizations_returns_page():
     from clawbot.skill_ctx import _LivePayments
 
     a1 = MagicMock(); a1.to_dict.return_value = {"id": "iauth_1", "amount": 500}
     a2 = MagicMock(); a2.to_dict.return_value = {"id": "iauth_2", "amount": 700}
     fake_list = MagicMock()
-    fake_list.auto_paging_iter.return_value = iter([a1, a2])
+    fake_list.data = [a1, a2]
 
     payments = _LivePayments(secret_key="sk_test_123")
     with patch("clawbot.skill_ctx.stripe") as stripe_mod:
         stripe_mod.issuing.Authorization.list.return_value = fake_list
         result = asyncio.run(payments.list_authorizations(card_id="ic_x", limit=10))
 
-    stripe_mod.issuing.Authorization.list.assert_called_once()
+    stripe_mod.issuing.Authorization.list.assert_called_once_with(card="ic_x", limit=10)
     assert len(result) == 2
     assert result[0]["id"] == "iauth_1"
+
+
+def test_live_issue_card_strips_pan_and_cvc_if_present():
+    """Defensive: even if Stripe returns number/cvc (future expand=), they're stripped."""
+    from clawbot.skill_ctx import _LivePayments
+
+    fake_card = MagicMock()
+    fake_card.to_dict.return_value = {
+        "id": "ic_x", "last4": "4242", "exp_month": 12, "exp_year": 2028,
+        "status": "active", "cardholder": "ich_x",
+        "number": "4242424242424242", "cvc": "123",  # hypothetical leak
+    }
+
+    payments = _LivePayments(secret_key="sk_test_123")
+    with patch("clawbot.skill_ctx.stripe") as stripe_mod:
+        stripe_mod.issuing.Card.create.return_value = fake_card
+        result = asyncio.run(payments.issue_card(
+            cardholder_id="ich_x", daily_limit_usd=10, agent_id="cmo",
+        ))
+
+    assert "number" not in result
+    assert "cvc" not in result
+    assert result["last4"] == "4242"
+    assert result["exp_year"] == 2028
