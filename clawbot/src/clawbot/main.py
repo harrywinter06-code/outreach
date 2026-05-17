@@ -92,6 +92,7 @@ async def main() -> None:
     from clawbot.skill_registry import init_skill_system
     from clawbot.skill_forge import SkillForge
     from clawbot.agent_lifecycle import AgentLifecycle
+    from clawbot.skill_catalog_writer import SkillCatalogWriter
 
     SKILLS_DIR = Path(__file__).parent.parent.parent / "agents" / "skills"
     WORKERS_DIR = Path(__file__).parent.parent.parent / "agents" / "workers"
@@ -100,7 +101,10 @@ async def main() -> None:
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
     skill_registry = init_skill_system(skills_dir=SKILLS_DIR)
+    skill_registry.set_stats_db(db.pool)
     logger.info("Loaded %d skills: %s", len(skill_registry.list_names()), skill_registry.list_names())
+
+    catalog_writer = SkillCatalogWriter(registry=skill_registry, brain=brain)
 
     forge = SkillForge(
         llm_pool=pool, bus=bus, registry=skill_registry,
@@ -134,6 +138,7 @@ async def main() -> None:
             skill_registry.run_watcher(),
             forge.run_loop(),
             lifecycle.run_loop(),
+            catalog_writer.run_loop(),
         )
     finally:
         await asyncio.gather(
