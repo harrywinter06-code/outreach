@@ -108,6 +108,18 @@ class PaymentsClient(Protocol):
     async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]: ...
 
 
+class SocialClient(Protocol):
+    async def x_post(self, text: str, reply_to: str | None = None) -> dict[str, Any]: ...
+    async def linkedin_post(self, text: str) -> dict[str, Any]: ...
+    async def reddit_submit(self, subreddit: str, title: str, body: str | None = None, url: str | None = None) -> dict[str, Any]: ...
+    async def reddit_comment(self, parent_id: str, body: str) -> dict[str, Any]: ...
+
+
+class EmailClient(Protocol):
+    async def send(self, to: str, subject: str, body_text: str, body_html: str | None = None, reply_to: str | None = None) -> dict[str, Any]: ...
+    async def verify_address(self, address: str) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -122,6 +134,8 @@ class SkillCtx:
     log: LogClient
     browser: BrowserClient
     payments: PaymentsClient
+    social: SocialClient
+    email: EmailClient
     caller_id: str
     budget_usd: float
 
@@ -220,11 +234,34 @@ class _NoopPayments:
         return {"id": "re_noop_abc", **kwargs}
 
 
+class _NoopSocial:
+    async def x_post(self, text: str, reply_to: str | None = None) -> dict[str, Any]:
+        return {"id": "noop_x_post"}
+
+    async def linkedin_post(self, text: str) -> dict[str, Any]:
+        return {"id": "noop_linkedin_post"}
+
+    async def reddit_submit(self, subreddit: str, title: str, body: str | None = None, url: str | None = None) -> dict[str, Any]:
+        return {"id": "noop_reddit_submit"}
+
+    async def reddit_comment(self, parent_id: str, body: str) -> dict[str, Any]:
+        return {"id": "noop_reddit_comment"}
+
+
+class _NoopEmail:
+    async def send(self, to: str, subject: str, body_text: str, body_html: str | None = None, reply_to: str | None = None) -> dict[str, Any]:
+        return {"id": "noop_email", "ok": True}
+
+    async def verify_address(self, address: str) -> dict[str, Any]:
+        return {"deliverable": True, "score": 0.5}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
         bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
+        social=_NoopSocial(), email=_NoopEmail(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -477,6 +514,157 @@ class _LivePayments:
         return ref.to_dict()
 
 
+class _LiveSocial:
+    """Social posting via X v2, LinkedIn UGC, and Reddit OAuth APIs."""
+
+    def __init__(
+        self,
+        x_bearer: str,
+        linkedin_token: str,
+        reddit_creds: dict[str, str] | None,
+    ) -> None:
+        self._x_bearer = x_bearer
+        self._linkedin_token = linkedin_token
+        self._reddit_creds = reddit_creds
+        self._timeout = 15.0
+
+    async def x_post(self, text: str, reply_to: str | None = None) -> dict[str, Any]:
+        if not self._x_bearer:
+            raise ValueError("X_BEARER_TOKEN not set")
+        body: dict[str, Any] = {"text": text[:280]}
+        if reply_to:
+            body["reply"] = {"in_reply_to_tweet_id": reply_to}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://api.twitter.com/2/tweets",
+                json=body,
+                headers={"Authorization": f"Bearer {self._x_bearer}"},
+            )
+            r.raise_for_status()
+        return {"id": r.json()["data"]["id"]}
+
+    async def linkedin_post(self, text: str) -> dict[str, Any]:
+        if not self._linkedin_token:
+            raise ValueError("LINKEDIN_ACCESS_TOKEN not set")
+        headers = {
+            "Authorization": f"Bearer {self._linkedin_token}",
+            "X-Restli-Protocol-Version": "2.0.0",
+        }
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            me = await client.get("https://api.linkedin.com/v2/me", headers=headers)
+            me.raise_for_status()
+            person_urn = f"urn:li:person:{me.json()['id']}"
+            payload = {
+                "author": person_urn,
+                "lifecycleState": "PUBLISHED",
+                "specificContent": {
+                    "com.linkedin.ugc.ShareContent": {
+                        "shareCommentary": {"text": text},
+                        "shareMediaCategory": "NONE",
+                    }
+                },
+                "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+            }
+            r = await client.post("https://api.linkedin.com/v2/ugcPosts", json=payload, headers=headers)
+            r.raise_for_status()
+        return {"id": r.headers.get("x-restli-id", "")}
+
+    async def _reddit_token(self, creds: dict[str, str]) -> str:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://www.reddit.com/api/v1/access_token",
+                data={"grant_type": "password", "username": creds["username"], "password": creds["password"]},
+                auth=(creds["client_id"], creds["client_secret"]),
+                headers={"User-Agent": creds["user_agent"]},
+            )
+            r.raise_for_status()
+        return r.json()["access_token"]  # type: ignore[no-any-return]
+
+    async def reddit_submit(self, subreddit: str, title: str, body: str | None = None, url: str | None = None) -> dict[str, Any]:
+        if not self._reddit_creds:
+            raise ValueError("REDDIT_CREDS not set")
+        token = await self._reddit_token(self._reddit_creds)
+        kind = "link" if url else "self"
+        post_data: dict[str, Any] = {"sr": subreddit, "title": title, "kind": kind}
+        if url:
+            post_data["url"] = url
+        if body:
+            post_data["text"] = body
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://oauth.reddit.com/api/submit",
+                data=post_data,
+                headers={
+                    "Authorization": f"bearer {token}",
+                    "User-Agent": self._reddit_creds["user_agent"],
+                },
+            )
+            r.raise_for_status()
+        return {"id": r.json()["json"]["data"]["id"]}
+
+    async def reddit_comment(self, parent_id: str, body: str) -> dict[str, Any]:
+        if not self._reddit_creds:
+            raise ValueError("REDDIT_CREDS not set")
+        token = await self._reddit_token(self._reddit_creds)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://oauth.reddit.com/api/comment",
+                data={"thing_id": parent_id, "text": body},
+                headers={
+                    "Authorization": f"bearer {token}",
+                    "User-Agent": self._reddit_creds["user_agent"],
+                },
+            )
+            r.raise_for_status()
+        return {"id": r.json()["json"]["data"]["things"][0]["data"]["id"]}
+
+
+class _LiveEmail:
+    """Resend outbound email + optional Bouncer address verification."""
+
+    _EMAIL_RE = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
+
+    def __init__(self, resend_key: str, from_address: str, bouncer_key: str = "") -> None:
+        self._resend_key = resend_key
+        self._from = from_address
+        self._bouncer_key = bouncer_key
+        self._timeout = 15.0
+
+    async def send(self, to: str, subject: str, body_text: str, body_html: str | None = None, reply_to: str | None = None) -> dict[str, Any]:
+        if not self._resend_key:
+            raise ValueError("RESEND_API_KEY not set")
+        body: dict[str, Any] = {
+            "from": self._from,
+            "to": [to],
+            "subject": subject,
+            "text": body_text,
+        }
+        if body_html:
+            body["html"] = body_html
+        if reply_to:
+            body["reply_to"] = reply_to
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://api.resend.com/emails",
+                json=body,
+                headers={"Authorization": f"Bearer {self._resend_key}"},
+            )
+            r.raise_for_status()
+        return {"id": r.json()["id"]}
+
+    async def verify_address(self, address: str) -> dict[str, Any]:
+        if self._bouncer_key:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.get(
+                    f"https://api.usebouncer.com/v1.1/email/verify?email={address}",
+                    headers={"x-api-key": self._bouncer_key},
+                )
+                r.raise_for_status()
+            return r.json()  # type: ignore[no-any-return]
+        deliverable = bool(self._EMAIL_RE.match(address))
+        return {"deliverable": deliverable, "score": 0.5 if deliverable else 0.0}
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -490,6 +678,12 @@ def make_live_ctx(
     workspace_root: str,
     fs_allowed_roots: list[str] | None = None,
     stripe_secret_key: str = "",
+    x_bearer: str = "",
+    linkedin_token: str = "",
+    reddit_creds: dict[str, str] | None = None,
+    resend_api_key: str = "",
+    email_from_address: str = "",
+    bouncer_api_key: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -500,6 +694,16 @@ def make_live_ctx(
     extra_roots = fs_allowed_roots or []
     payments: PaymentsClient = (
         _LivePayments(stripe_secret_key) if stripe_secret_key else _NoopPayments()
+    )
+    social: SocialClient = (
+        _LiveSocial(x_bearer, linkedin_token, reddit_creds)
+        if (x_bearer or linkedin_token or reddit_creds)
+        else _NoopSocial()
+    )
+    email: EmailClient = (
+        _LiveEmail(resend_api_key, email_from_address, bouncer_api_key)
+        if resend_api_key
+        else _NoopEmail()
     )
     return SkillCtx(
         http=_LiveHttp(),
@@ -514,6 +718,8 @@ def make_live_ctx(
         log=_LiveLog(caller_id),
         browser=_LiveBrowser(pool=llm_pool),
         payments=payments,
+        social=social,
+        email=email,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
