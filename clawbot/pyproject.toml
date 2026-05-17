@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.26",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
+    "stripe>=11.0",
 ]
 
 [project.optional-dependencies]
