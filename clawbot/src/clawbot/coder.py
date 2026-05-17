@@ -25,6 +25,14 @@ Safety invariants:
 - Files > 500 lines are rejected — whole-file LLM output is unreliable beyond
   that, and a single rewrite of a large file is a large blast radius anyway.
 - New pip dependencies cannot be added via code change (image rebuild required).
+
+Governance split (added 2026-05-17):
+- This coder governs src/clawbot/ — full LLM whole-file regen, pytest gate,
+  charter hash check, protected file list.
+- The skill system (skill_registry, skill_forge) governs agents/skills/ —
+  AST-scanned, shadow-validated, no pytest gate (skills are sandboxed).
+- agents/**/SOUL.md is owned by genome.mutate_soul (meta-evaluator).
+- workspace/ and data/ are free organism workspace — writable via ctx.fs.
 """
 from __future__ import annotations
 

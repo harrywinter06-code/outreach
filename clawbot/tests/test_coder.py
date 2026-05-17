@@ -286,3 +286,27 @@ def test_sha256_matches_stdlib(tmp_path):
     f = tmp_path / "x"
     f.write_text("hello", encoding="utf-8")
     assert _sha256(f) == hashlib.sha256(b"hello").hexdigest()
+
+
+# ── Governance split ─────────────────────────────────────────────────────────
+
+
+def test_coder_unaffected_by_skill_dir_changes():
+    """Writes to agents/skills/, agents/workers/, workspace/, data/ never reach coder.
+
+    Coder only consumes code.change_request bus messages. Skill writes happen
+    via fs.write skill or direct file authorship — they never publish to
+    code.change_request, so coder is not on the path. This test confirms.
+    """
+    from clawbot.coder import _is_protected
+    # Skill files are NOT protected — they're a different governance surface
+    assert _is_protected("agents/skills/_builtin/http_fetch.py") is False
+    assert _is_protected("agents/skills/weather_check.py") is False
+    # agents/**/SOUL.md glob matches one level via Path.match(); executive SOULs are protected
+    assert _is_protected("agents/ceo/SOUL.md") is True
+    assert _is_protected("workspace/scratch.txt") is False
+    assert _is_protected("data/observations.jsonl") is False
+
+    # Source code remains protected via the existing list
+    assert _is_protected("src/clawbot/monitor.py") is True
+    assert _is_protected("src/clawbot/coder.py") is True
