@@ -21,6 +21,7 @@ EXPECTED_BUILTINS = {
     "operator_message", "operator_request_approval", "time_now", "bus_publish",
     "worker_spawn", "worker_fire", "skill_request",
     "account_create", "account_get", "account_list", "account_mark_zombie",
+    "stripe_issue_card", "stripe_freeze_card", "stripe_list_authorizations",
 }
 
 
