@@ -13,6 +13,7 @@ from typing import Any
 
 from clawbot.skill_ctx import (
     SkillCtx,
+    _NoopAccounts,
     _NoopBrowser,
     _NoopBus,
     _NoopEmail,
@@ -99,6 +100,7 @@ def make_shadow_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         social=_NoopSocial(),
         email=_NoopEmail(),
         search=_NoopSearch(),
+        accounts=_NoopAccounts(),
         caller_id=caller_id,
         budget_usd=budget_usd,
     )

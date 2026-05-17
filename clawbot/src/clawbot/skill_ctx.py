@@ -128,6 +128,15 @@ class SearchClient(Protocol):
     async def extract_url(self, url: str) -> dict[str, Any]: ...
 
 
+class AccountsClient(Protocol):
+    async def create_account(
+        self, *, service: str, signup_url: str, notes: str = "",
+    ) -> dict[str, Any]: ...
+    async def get_account(self, *, service: str, email: str) -> dict[str, Any] | None: ...
+    async def list_accounts(self, *, status: str | None = None) -> list[dict[str, Any]]: ...
+    async def mark_zombie(self, *, service: str, email: str, reason: str) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -145,6 +154,7 @@ class SkillCtx:
     social: SocialClient
     email: EmailClient
     search: SearchClient
+    accounts: AccountsClient
     caller_id: str
     budget_usd: float
 
@@ -286,12 +296,29 @@ class _NoopSearch:
         return {"url": url, "title": "", "markdown": ""}
 
 
+class _NoopAccounts:
+    async def create_account(
+        self, *, service: str, signup_url: str, notes: str = "",
+    ) -> dict[str, Any]:
+        return {"status": "noop", "service": service, "email": "", "url": signup_url}
+
+    async def get_account(self, *, service: str, email: str) -> dict[str, Any] | None:
+        return None
+
+    async def list_accounts(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        return []
+
+    async def mark_zombie(self, *, service: str, email: str, reason: str) -> dict[str, Any]:
+        return {"service": service, "email": email, "status": "zombie", "reason": reason}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
         bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
         social=_NoopSocial(), email=_NoopEmail(), search=_NoopSearch(),
+        accounts=_NoopAccounts(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -826,6 +853,7 @@ def make_live_ctx(
         social=social,
         email=email,
         search=search,
+        accounts=_NoopAccounts(),
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
