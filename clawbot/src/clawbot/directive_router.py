@@ -268,6 +268,7 @@ class DirectiveRouter:
             secret_allowlist=[
                 "GUMROAD_API_KEY", "STRIPE_SECRET_KEY",
                 "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+                "STRIPE_ISSUING_CARDHOLDER_ID",
             ],
             workspace_root=str(self._metrics_dir / "workspace"),
             fs_allowed_roots=[
@@ -277,6 +278,13 @@ class DirectiveRouter:
             ],
             tavily_api_key=settings.tavily_api_key,
             firecrawl_api_key=settings.firecrawl_api_key,
+            accounts_vault_key=settings.accounts_vault_key,
+            accounts_db_path=settings.accounts_db_path,
+            imap_host=settings.imap_host,
+            imap_port=settings.imap_port,
+            imap_user=settings.imap_user,
+            imap_password=settings.imap_password,
+            email_domain=settings.email_domain,
         )
 
         record = await REGISTRY.call(skill_name, params, ctx)

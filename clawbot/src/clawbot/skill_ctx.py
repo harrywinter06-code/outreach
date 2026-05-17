@@ -790,6 +790,158 @@ class _LiveSearch:
         return await firecrawl.extract(api_key=self._firecrawl_key, url=url)
 
 
+class _LiveAccounts:
+    """Orchestrates autonomous account signup → verify → vault storage.
+
+    The signup task is a single browser-use directive rather than a scripted
+    DOM walk: browser-use's strength is self-healing across DOM changes, so
+    we hand it the goal and let it find the form fields. The verification
+    poll runs after browser success and times out into a zombie state if no
+    mail arrives — better than blocking forever on a service that silently
+    rate-limited us."""
+
+    def __init__(
+        self,
+        *,
+        vault: Any,
+        profiles: Any,
+        browser: Any,
+        email_reader: Any,
+        email_domain: str,
+        verification_poll_timeout_s: float = 120.0,
+        verification_poll_interval_s: float = 5.0,
+    ) -> None:
+        self._vault = vault
+        self._profiles = profiles
+        self._browser = browser
+        self._email_reader = email_reader
+        self._email_domain = email_domain
+        self._verify_timeout = verification_poll_timeout_s
+        self._verify_interval = verification_poll_interval_s
+
+    async def create_account(
+        self, *, service: str, signup_url: str, notes: str = "",
+    ) -> dict[str, Any]:
+        import secrets as _secrets
+        import json as _json
+
+        timestamp = int(datetime.now(UTC).timestamp())
+        alias = f"{service}-{timestamp}"
+        email_addr = f"{alias}@{self._email_domain}"
+        password = _secrets.token_hex(16)
+
+        task = (
+            f"Sign up for {service} at {signup_url}. "
+            f"Use email '{email_addr}' and password '{password}'. "
+            f"Complete any inline form fields needed. "
+            f"After submitting, wait for the page that says a verification email was sent. "
+            f"Then return the page's storage_state as JSON in your output."
+        )
+        browser_result = await self._browser.run(task=task, max_steps=30)
+        if not browser_result.get("success"):
+            err = browser_result.get("error", "unknown")
+            self._vault.store(
+                service=service, email=email_addr, password=password,
+                cookies_json="", notes=f"signup failed: {err}",
+            )
+            self._vault.mark_zombie(
+                service=service, email=email_addr,
+                reason=f"browser failure: {err}",
+            )
+            return {"status": "zombie", "service": service, "email": email_addr,
+                    "reason": f"browser failure: {err}"}
+
+        verification = await self._poll_verification(alias)
+        if verification is None:
+            self._vault.store(
+                service=service, email=email_addr, password=password,
+                cookies_json="", notes="verification timeout",
+            )
+            self._vault.mark_zombie(
+                service=service, email=email_addr,
+                reason="verification mail not received in window",
+            )
+            return {"status": "zombie", "service": service, "email": email_addr,
+                    "reason": "verification timeout"}
+
+        if verification.url:
+            await self._browser.run(
+                task=f"Open URL {verification.url} to complete signup verification. "
+                     f"Return resulting storage_state.",
+                max_steps=10,
+            )
+        elif verification.code:
+            await self._browser.run(
+                task=f"On the current page, enter the verification code {verification.code}. "
+                     f"Return resulting storage_state.",
+                max_steps=10,
+            )
+
+        storage_state = self._extract_storage_state(browser_result.get("output", ""))
+        cookies_json = _json.dumps(storage_state) if storage_state else ""
+        if storage_state:
+            try:
+                self._profiles.save(service, storage_state)
+            except ValueError:
+                pass
+
+        self._vault.store(
+            service=service, email=email_addr, password=password,
+            cookies_json=cookies_json, notes=notes,
+        )
+        return {"status": "live", "service": service, "email": email_addr, "url": signup_url}
+
+    async def get_account(self, *, service: str, email: str) -> dict[str, Any] | None:
+        rec = self._vault.get(service=service, email=email)
+        if rec is None:
+            return None
+        return {
+            "service": rec.service, "email": rec.email,
+            "password": rec.password, "cookies_json": rec.cookies_json,
+            "status": rec.status, "last_login_iso": rec.last_login_iso,
+            "notes": rec.notes,
+        }
+
+    async def list_accounts(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        rows = self._vault.list_accounts(status=status)
+        return [
+            {"service": r.service, "email": r.email, "password": r.password,
+             "cookies_json": r.cookies_json, "status": r.status,
+             "last_login_iso": r.last_login_iso, "notes": r.notes}
+            for r in rows
+        ]
+
+    async def mark_zombie(
+        self, *, service: str, email: str, reason: str,
+    ) -> dict[str, Any]:
+        self._vault.mark_zombie(service=service, email=email, reason=reason)
+        return {"service": service, "email": email, "status": "zombie", "reason": reason}
+
+    async def _poll_verification(self, alias: str) -> Any:
+        deadline = asyncio.get_event_loop().time() + self._verify_timeout
+        while asyncio.get_event_loop().time() < deadline:
+            result = await self._email_reader.find_verification(
+                alias=alias, since_minutes=10,
+            )
+            if result is not None:
+                return result
+            await asyncio.sleep(self._verify_interval)
+        return None
+
+    @staticmethod
+    def _extract_storage_state(browser_output: str) -> dict[str, Any] | None:
+        """browser-use may return free-form text or JSON. Best-effort extract."""
+        import json as _json
+        try:
+            parsed = _json.loads(browser_output)
+            if isinstance(parsed, dict) and "storage_state" in parsed:
+                state = parsed["storage_state"]
+                return state if isinstance(state, dict) else None
+            return parsed if isinstance(parsed, dict) and "cookies" in parsed else None
+        except _json.JSONDecodeError:
+            return None
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -811,6 +963,13 @@ def make_live_ctx(
     bouncer_api_key: str = "",
     tavily_api_key: str = "",
     firecrawl_api_key: str = "",
+    accounts_vault_key: str = "",
+    accounts_db_path: str = "data/accounts.db",
+    imap_host: str = "",
+    imap_port: int = 993,
+    imap_user: str = "",
+    imap_password: str = "",
+    email_domain: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -837,6 +996,33 @@ def make_live_ctx(
         if (tavily_api_key or firecrawl_api_key)
         else _NoopSearch()
     )
+
+    # Single _LiveBrowser shared by SkillCtx.browser and _LiveAccounts so the
+    # CX21's 4GB RAM cap is honoured — two instances would double the concurrent
+    # Chromium ceiling (2 each → 4 total) and oom the container.
+    browser_client = _LiveBrowser(pool=llm_pool)
+
+    accounts: AccountsClient
+    if accounts_vault_key and imap_host and email_domain:
+        from clawbot.accounts_store import AccountsStore
+        from clawbot.profile_store import ProfileStore
+        from clawbot.email_reader import EmailReader
+        vault = AccountsStore(db_path=accounts_db_path, encryption_key=accounts_vault_key)
+        vault.init_schema()
+        profiles = ProfileStore(root="data/profiles")
+        email_reader = EmailReader(
+            host=imap_host, port=imap_port,
+            user=imap_user, password=imap_password,
+            domain=email_domain,
+        )
+        accounts = _LiveAccounts(
+            vault=vault, profiles=profiles,
+            browser=browser_client, email_reader=email_reader,
+            email_domain=email_domain,
+        )
+    else:
+        accounts = _NoopAccounts()
+
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -848,12 +1034,12 @@ def make_live_ctx(
         operator=_LiveOperator(escalation, bus, caller_id),
         bus=_LiveBus(bus, caller_id),
         log=_LiveLog(caller_id),
-        browser=_LiveBrowser(pool=llm_pool),
+        browser=browser_client,
         payments=payments,
         social=social,
         email=email,
         search=search,
-        accounts=_NoopAccounts(),
+        accounts=accounts,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
