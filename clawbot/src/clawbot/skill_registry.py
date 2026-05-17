@@ -200,3 +200,14 @@ class SkillRegistry:
                         logger.info("skill removed (file deleted): %s", name)
 
             seen = current
+
+
+# Module-level singleton — initialised in main.py startup, consumed by DirectiveRouter.
+REGISTRY: SkillRegistry | None = None
+
+
+def init_skill_system(skills_dir: Path) -> SkillRegistry:
+    global REGISTRY
+    REGISTRY = SkillRegistry(skills_dir=skills_dir)
+    REGISTRY.discover()
+    return REGISTRY

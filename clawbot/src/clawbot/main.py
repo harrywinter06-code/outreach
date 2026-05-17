@@ -89,6 +89,26 @@ async def main() -> None:
 
     brain = CompanyBrain(pool=db.pool)
 
+    from clawbot.skill_registry import init_skill_system
+    from clawbot.skill_forge import SkillForge
+    from clawbot.agent_lifecycle import AgentLifecycle
+
+    SKILLS_DIR = Path(__file__).parent.parent.parent / "agents" / "skills"
+    WORKERS_DIR = Path(__file__).parent.parent.parent / "agents" / "workers"
+    ARCHIVE_DIR = Path(__file__).parent.parent.parent / "agents" / "skills_archive"
+    WORKERS_DIR.mkdir(parents=True, exist_ok=True)
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    skill_registry = init_skill_system(skills_dir=SKILLS_DIR)
+    logger.info("Loaded %d skills: %s", len(skill_registry.list_names()), skill_registry.list_names())
+
+    forge = SkillForge(
+        llm_pool=pool, bus=bus, registry=skill_registry,
+        skills_dir=SKILLS_DIR, archive_dir=ARCHIVE_DIR,
+        brain=brain, db_pool=db.pool, escalation=None,
+    )
+    lifecycle = AgentLifecycle(registry=registry, bus=bus, workers_dir=WORKERS_DIR)
+
     topics = [
         "ceo.directive", "cfo.directive", "cmo.directive",
         "coo.directive", "cto.directive",
@@ -111,6 +131,9 @@ async def main() -> None:
         await asyncio.gather(
             scheduler.run_forever(),
             start_dashboard(db_pool=db.pool, redis_url=settings.redis_url),
+            skill_registry.run_watcher(),
+            forge.run_loop(),
+            lifecycle.run_loop(),
         )
     finally:
         await asyncio.gather(
