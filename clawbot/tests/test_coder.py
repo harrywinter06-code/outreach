@@ -302,8 +302,9 @@ def test_coder_unaffected_by_skill_dir_changes():
     # Skill files are NOT protected — they're a different governance surface
     assert _is_protected("agents/skills/_builtin/http_fetch.py") is False
     assert _is_protected("agents/skills/weather_check.py") is False
-    # agents/**/SOUL.md glob matches one level via Path.match(); executive SOULs are protected
+    # agents/**/SOUL.md now uses fnmatch so all depths are protected
     assert _is_protected("agents/ceo/SOUL.md") is True
+    assert _is_protected("agents/workers/researcher-001/SOUL.md") is True
     assert _is_protected("workspace/scratch.txt") is False
     assert _is_protected("data/observations.jsonl") is False
 

@@ -101,13 +101,20 @@ def _is_protected(filepath: str) -> bool:
 
     Normalises path separators so 'src/clawbot/monitor.py' and 'src\\clawbot\\monitor.py'
     are treated equivalently on Windows.
+
+    Uses fnmatch instead of Path.match because the latter does not handle `**`
+    at arbitrary depth — `agents/**/SOUL.md` would not match
+    `agents/workers/researcher-001/SOUL.md` under Path.match.
     """
+    import fnmatch
     normalised = filepath.replace("\\", "/")
     if normalised in PROTECTED_FILES:
         return True
-    candidate = Path(normalised)
     for pattern in PROTECTED_GLOBS:
-        if candidate.match(pattern):
+        # Convert `**` to fnmatch's `*` (any-depth) — fnmatch treats `*` as
+        # any sequence including `/`, which is what we want here.
+        fn_pattern = pattern.replace("**", "*")
+        if fnmatch.fnmatch(normalised, fn_pattern):
             return True
     return False
 
