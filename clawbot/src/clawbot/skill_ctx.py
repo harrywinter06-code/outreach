@@ -8,7 +8,7 @@ defeats every other safety mechanism in the system.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
