@@ -81,6 +81,29 @@ def scan_skill_source(source: str) -> None:
                 raise SkillValidationError(f"dunder attribute access: {node.attr}")
 
 
+def _make_restricted_import(allowlist: frozenset[str]) -> object:
+    """Return a __import__ that only loads modules from the allowlist.
+
+    The AST scan already rejects forbidden imports at parse time; this is a
+    runtime defence-in-depth so that even a scanner bypass cannot reach os/socket/etc.
+    """
+    import builtins as _builtins
+
+    def _restricted_import(
+        name: str,
+        globals: dict | None = None,
+        locals: dict | None = None,
+        fromlist: tuple = (),
+        level: int = 0,
+    ) -> object:
+        root = name.split(".")[0]
+        if root not in allowlist:
+            raise ImportError(f"skill import not allowed: {name}")
+        return _builtins.__import__(name, globals, locals, fromlist, level)
+
+    return _restricted_import
+
+
 def load_skill_module(source: str, module_name: str) -> dict:
     """Compile source with restricted builtins, return its module namespace.
 
@@ -97,10 +120,14 @@ def load_skill_module(source: str, module_name: str) -> dict:
         "print", "range", "repr", "reversed", "round", "set", "slice",
         "sorted", "str", "sum", "tuple", "type", "zip",
         "Exception", "ValueError", "TypeError", "RuntimeError",
-        "KeyError", "IndexError", "AttributeError",
+        "KeyError", "IndexError", "AttributeError", "PermissionError",
     ):
         if name in raw:
             safe_builtins[name] = raw[name]
+
+    # Provide a restricted __import__ so `import uuid` etc. work inside skills.
+    # Only modules in ALLOWED_IMPORTS pass through — everything else raises ImportError.
+    safe_builtins["__import__"] = _make_restricted_import(ALLOWED_IMPORTS)
 
     namespace: dict = {"__builtins__": safe_builtins, "__name__": module_name}
     code = compile(source, f"<skill:{module_name}>", "exec")

@@ -5,6 +5,7 @@ Discovery is one-shot at startup; hot-reload is added in Task 5.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -90,7 +91,20 @@ class SkillRegistry:
                 error=f"unknown skill: {name}",
             )
 
-        missing = [p for p in skill.meta.params if p not in params]
+        # Identify which META params lack a default in the run() signature.
+        # Params with defaults in run() are optional even if listed in META.
+        sig = inspect.signature(skill.run)
+        required_params = {
+            pname
+            for pname, param in sig.parameters.items()
+            if pname != "ctx"
+            and param.default is inspect.Parameter.empty
+            and param.kind not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            )
+        }
+        missing = [p for p in required_params if p not in params]
         if missing:
             return SkillCallRecord(
                 skill_name=name,
