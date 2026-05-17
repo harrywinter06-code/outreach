@@ -12,7 +12,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
-from clawbot.skill_ctx import make_noop_ctx
+from clawbot.shadow_ctx import make_shadow_ctx
 from clawbot.skill_loader import scan_skill_source, SkillValidationError
 from clawbot.skill_registry import SkillRegistry
 
@@ -119,7 +119,7 @@ class SkillForge:
             return
 
         example = req.get("example_call", {})
-        ctx = make_noop_ctx(caller_id=f"shadow-{name}", budget_usd=SHADOW_BUDGET_USD)
+        ctx = make_shadow_ctx(caller_id=f"shadow-{name}", budget_usd=SHADOW_BUDGET_USD)
         for i in range(SHADOW_ITERATIONS):
             rec = await shadow_reg.call(name, example, ctx)
             if not rec.ok:
