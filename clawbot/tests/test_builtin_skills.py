@@ -20,6 +20,7 @@ EXPECTED_BUILTINS = {
     "secret_get", "fs_read", "fs_write", "fs_list", "sql_query",
     "operator_message", "operator_request_approval", "time_now", "bus_publish",
     "worker_spawn", "worker_fire", "skill_request",
+    "account_create", "account_get", "account_list", "account_mark_zombie",
 }
 
 
