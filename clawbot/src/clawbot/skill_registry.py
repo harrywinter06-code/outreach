@@ -153,3 +153,36 @@ class SkillRegistry:
                 ok=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    async def run_watcher(self) -> None:
+        """Poll skills_dir for changes; reload on add/modify/delete. Runs forever."""
+        seen: dict[Path, float] = {
+            p: p.stat().st_mtime for p in self._dir.rglob("*.py") if p.is_file()
+        }
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                current = {
+                    p: p.stat().st_mtime for p in self._dir.rglob("*.py") if p.is_file()
+                }
+            except FileNotFoundError:
+                continue
+
+            # New or modified files
+            for path, mtime in current.items():
+                if seen.get(path) != mtime:
+                    try:
+                        self._load_one(path)
+                    except SkillValidationError as exc:
+                        logger.warning("hot-reload rejected: %s — %s", path, exc)
+                    except Exception as exc:
+                        logger.error("hot-reload error: %s — %s", path, exc)
+
+            # Deleted files — drop from registry
+            for path in seen.keys() - current.keys():
+                for name, loaded in list(self._skills.items()):
+                    if loaded.source_path == path:
+                        del self._skills[name]
+                        logger.info("skill removed (file deleted): %s", name)
+
+            seen = current

@@ -62,3 +62,33 @@ def test_registry_enforces_param_schema(skills_dir: Path):
     record = asyncio.run(reg.call("echo", {"wrong_param": "x"}, ctx))
     assert record.ok is False
     assert "missing required param: text" in record.error
+
+
+NEW_SKILL = '''
+META = {"name": "added_at_runtime", "description": "x", "params": {}, "returns": {}}
+async def run(ctx) -> dict:
+    return {"x": 1}
+'''
+
+def test_registry_hot_reloads_new_file(skills_dir):
+    reg = SkillRegistry(skills_dir=skills_dir)
+    reg.discover()
+    assert "added_at_runtime" not in reg.list_names()
+
+    async def add_and_wait():
+        watcher_task = asyncio.create_task(reg.run_watcher())
+        await asyncio.sleep(0.1)
+        (skills_dir / "added_at_runtime.py").write_text(NEW_SKILL)
+        # Wait up to 3s for watcher to pick it up
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            if "added_at_runtime" in reg.list_names():
+                break
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(add_and_wait())
+    assert "added_at_runtime" in reg.list_names()
