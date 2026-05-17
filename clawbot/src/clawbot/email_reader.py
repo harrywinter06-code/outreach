@@ -21,6 +21,7 @@ _URL_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_RE = re.compile(r"\b(\d{6})\b")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 @dataclass(frozen=True)
@@ -43,10 +44,11 @@ class EmailReader:
         """Search inbox for the latest mail to alias@domain, return URL or 6-digit code."""
         return await asyncio.to_thread(self._sync_find, alias, since_minutes)
 
-    def _sync_find(self, alias: str, since_minutes: int) -> VerificationResult | None:
+    def _sync_find(self, alias: str, since_minutes: int) -> "VerificationResult | None":
         target_address = f"{alias}@{self._domain}".lower()
         since = datetime.now(UTC) - timedelta(minutes=since_minutes)
         since_str = since.strftime("%d-%b-%Y")
+        imap: "imaplib.IMAP4_SSL | None" = None
         try:
             imap = imaplib.IMAP4_SSL(self._host, self._port)
             imap.login(self._user, self._password)
@@ -54,7 +56,9 @@ class EmailReader:
             status, data = imap.search(None, f'(SINCE "{since_str}")')
             if status != "OK" or not data or not data[0]:
                 return None
-            msg_ids = data[0].split()
+            # Cap at the 50 most recent matches — IMAP SINCE is date-granular,
+            # so a busy inbox can yield hundreds of hits for a 10-minute query.
+            msg_ids = data[0].split()[-50:]
             for msg_id in reversed(msg_ids):  # newest first
                 status, msg_data = imap.fetch(msg_id, "(RFC822)")
                 if status != "OK" or not msg_data:
@@ -78,22 +82,39 @@ class EmailReader:
             logger.warning("IMAP fetch failed: %s", exc)
             return None
         finally:
-            try:
-                imap.close()  # type: ignore[union-attr]
-                imap.logout()  # type: ignore[union-attr]
-            except Exception:
-                pass
+            if imap is not None:
+                try:
+                    imap.close()
+                    imap.logout()
+                except Exception:
+                    pass
 
     @staticmethod
-    def _extract_body(msg: email.message.Message) -> str:
+    def _extract_body(msg: "email.message.Message") -> str:
         if msg.is_multipart():
-            parts = []
+            plain_parts: list[str] = []
+            html_parts: list[str] = []
             for part in msg.walk():
-                if part.get_content_type() == "text/plain":
+                ct = part.get_content_type()
+                if ct == "text/plain":
                     payload = part.get_payload(decode=True)
                     if isinstance(payload, bytes):
-                        parts.append(payload.decode("utf-8", errors="replace"))
-            return "\n".join(parts)
+                        decoded = payload.decode("utf-8", errors="replace")
+                        if decoded.strip():
+                            plain_parts.append(decoded)
+                elif ct == "text/html":
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes):
+                        html_parts.append(payload.decode("utf-8", errors="replace"))
+            if plain_parts:
+                return "\n".join(plain_parts)
+            # Return raw HTML: _URL_RE excludes <>"' so it matches href values
+            # correctly. Strip tags only when falling back to code detection so
+            # digit sequences inside tag attributes aren't false positives.
+            html = "\n".join(html_parts)
+            if _URL_RE.search(html):
+                return html
+            return _HTML_TAG_RE.sub(" ", html)
         payload = msg.get_payload(decode=True)
         if isinstance(payload, bytes):
             return payload.decode("utf-8", errors="replace")

@@ -67,3 +67,39 @@ def test_alias_isolation_only_matches_alias():
     with patch("clawbot.email_reader.imaplib.IMAP4_SSL", return_value=fake_imap):
         result = asyncio.run(reader.find_verification(alias="substack+sub1", since_minutes=10))
     assert result is None
+
+
+def test_finds_code_in_html_when_plain_is_empty():
+    """multipart/alternative with empty text/plain + URL in text/html."""
+    msg_bytes = (
+        b'To: substack-1@example.com\r\n'
+        b'From: noreply@substack.com\r\n'
+        b'Subject: Verify\r\n'
+        b'Content-Type: multipart/alternative; boundary="b"\r\n'
+        b'\r\n'
+        b'--b\r\nContent-Type: text/plain\r\n\r\n\r\n'
+        b'--b\r\nContent-Type: text/html\r\n\r\n'
+        b'<html><body>Click '
+        b'<a href="https://substack.com/verify?t=xyz">here</a></body></html>\r\n'
+        b'--b--\r\n'
+    )
+    fake_imap = MagicMock()
+    fake_imap.search.return_value = ("OK", [b"1"])
+    fake_imap.fetch.return_value = ("OK", [(b"1 (RFC822 {123}", msg_bytes)])
+
+    reader = EmailReader(host="x", port=993, user="u", password="p", domain="example.com")
+    with patch("clawbot.email_reader.imaplib.IMAP4_SSL", return_value=fake_imap):
+        result = asyncio.run(reader.find_verification(alias="substack-1", since_minutes=10))
+
+    assert result is not None
+    assert result.url == "https://substack.com/verify?t=xyz"
+
+
+def test_returns_none_on_imap_connection_failure():
+    """IMAP4_SSL() raising must not propagate — returns None cleanly."""
+    reader = EmailReader(host="bad.example", port=993, user="u", password="p", domain="example.com")
+    def boom(*args, **kwargs):
+        raise ConnectionRefusedError("nope")
+    with patch("clawbot.email_reader.imaplib.IMAP4_SSL", side_effect=boom):
+        result = asyncio.run(reader.find_verification(alias="x", since_minutes=10))
+    assert result is None
