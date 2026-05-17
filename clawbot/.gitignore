@@ -1,4 +1,6 @@
 .env
+credentials.local.md
+*.local.md
 __pycache__/
 *.pyc
 *.pyo

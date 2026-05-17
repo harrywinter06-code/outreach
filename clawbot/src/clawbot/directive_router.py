@@ -253,6 +253,7 @@ class DirectiveRouter:
         """
         from clawbot.skill_registry import REGISTRY
         from clawbot.skill_ctx import make_live_ctx
+        from clawbot.config import settings
         if REGISTRY is None:
             raise RuntimeError("skill registry not initialised")
 
@@ -274,6 +275,8 @@ class DirectiveRouter:
                 str(self._metrics_dir.parent / "agents" / "workers"),
                 str(self._metrics_dir.parent / "data"),
             ],
+            tavily_api_key=settings.tavily_api_key,
+            firecrawl_api_key=settings.firecrawl_api_key,
         )
 
         record = await REGISTRY.call(skill_name, params, ctx)

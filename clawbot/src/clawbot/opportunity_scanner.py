@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from clawbot.config import settings
 from clawbot.metrics import MetricsStore, Opportunity
+from clawbot.tools import tavily
 
 if TYPE_CHECKING:
     from clawbot.causal_store import CausalStore
@@ -98,6 +100,21 @@ SCAN_SOURCES = [
         "url": "https://hacker-news.firebaseio.com/v0/topstories.json",
         "kind": "hackernews",
         "description": "Tech/business opportunities with global reach",
+    },
+    # Tavily-backed news search. Routed through Tavily's servers (free 1k/mo)
+    # so it sidesteps the VPS-IP block that hits Reddit. Skipped silently when
+    # TAVILY_API_KEY is empty.
+    {
+        "id": "tavily_uk_contractor",
+        "url": "UK contractor IR35 changes 2026",
+        "kind": "tavily_news",
+        "description": "Timely UK contractor/IR35 regulatory shifts",
+    },
+    {
+        "id": "tavily_uk_smallbiz",
+        "url": "UK small business regulation news this week",
+        "kind": "tavily_news",
+        "description": "UK small-business regulatory/tax news",
     },
 ]
 
@@ -248,12 +265,33 @@ class OpportunityScanner:
         stories = await asyncio.gather(*[_story(i) for i in ids], return_exceptions=True)
         return "\n".join(s for s in stories if isinstance(s, str) and s)
 
+    async def _fetch_tavily_news(self, query: str) -> str:
+        """Tavily search routed through their servers — sidesteps VPS IP blocks.
+        Returns empty string (silent skip) when no API key is configured."""
+        if not settings.tavily_api_key:
+            return ""
+        results = await tavily.search(
+            api_key=settings.tavily_api_key,
+            query=query,
+            max_results=10,
+            search_depth="basic",
+        )
+        items = []
+        for r in results:
+            title = _sanitize_external_text(r.get("title", ""))
+            snippet = _sanitize_external_text((r.get("content", "") or "")[:200])
+            score = int(r.get("score", 0.0) * 100)
+            items.append(f"- [{score}] {title}\n  {snippet}")
+        return "\n".join(items)
+
     async def _fetch_source(self, client: httpx.AsyncClient, source: dict) -> str:
         try:
             if source["kind"] == "reddit":
                 return await self._fetch_reddit(client, source["url"], source["id"])
             if source["kind"] == "hackernews":
                 return await self._fetch_hacker_news(client, source["url"])
+            if source["kind"] == "tavily_news":
+                return await self._fetch_tavily_news(source["url"])
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Source %s fetch failed: %s", source["id"], exc)
         return ""

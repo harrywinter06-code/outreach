@@ -1,10 +1,20 @@
-"""Lightweight HTTP research tool for agent-directed web fetches."""
+"""Lightweight HTTP research tool for agent-directed web fetches.
+
+When FIRECRAWL_API_KEY is set, fetch_and_extract upgrades to Firecrawl
+markdown extraction — strips boilerplate/ads cleanly and produces output
+better suited for LLM consumption. The injection sanitizer still runs on
+top: Firecrawl returns whatever the page says, and pages can contain
+adversarial "ignore previous instructions" payloads that would otherwise
+flow into the brain and into the meta-evaluator's mutation prompts."""
 from __future__ import annotations
 
 import logging
 import re
 
 import httpx
+
+from clawbot.config import settings
+from clawbot.tools import firecrawl
 
 logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT_S = 15.0
@@ -49,7 +59,17 @@ def _strip_html(html: str) -> str:
 
 
 async def fetch_and_extract(url: str) -> str:
-    """Fetch URL and return sanitized plaintext. Raises on HTTP error or timeout."""
+    """Fetch URL and return sanitized plaintext.
+
+    Uses Firecrawl when FIRECRAWL_API_KEY is set (cleaner extraction for LLMs);
+    falls back to httpx + regex strip otherwise, or on Firecrawl error.
+    Raises on HTTP error in the fallback path."""
+    if settings.firecrawl_api_key:
+        try:
+            result = await firecrawl.extract(api_key=settings.firecrawl_api_key, url=url)
+            return _sanitize(result["markdown"][:_MAX_CONTENT_CHARS])
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Firecrawl failed for %s, falling back to httpx: %s", url, exc)
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT_S, headers=_HEADERS, follow_redirects=True,
     ) as client:

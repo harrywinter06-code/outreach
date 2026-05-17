@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     gumroad_api_key: str = ""
     stripe_secret_key: str = ""
 
+    # Search & extraction — both free-tier, both optional.
+    # tavily: LLM-graded web search (1k/mo free). Used by SearchClient.search.
+    # firecrawl: URL → clean markdown (500 pages/mo free). Used by web_researcher
+    # and SearchClient.extract_url when present; falls back to local regex strip.
+    tavily_api_key: str = ""
+    firecrawl_api_key: str = ""
+
     @property
     def active_provider_names(self) -> list[str]:
         names = [f"nim-{i+1}" for i in range(len(self.nim_api_keys))]

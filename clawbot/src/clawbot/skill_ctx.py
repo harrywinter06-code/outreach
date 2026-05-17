@@ -120,6 +120,11 @@ class EmailClient(Protocol):
     async def verify_address(self, address: str) -> dict[str, Any]: ...
 
 
+class SearchClient(Protocol):
+    async def search(self, query: str, *, max_results: int = 5) -> list[dict[str, Any]]: ...
+    async def extract_url(self, url: str) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -136,6 +141,7 @@ class SkillCtx:
     payments: PaymentsClient
     social: SocialClient
     email: EmailClient
+    search: SearchClient
     caller_id: str
     budget_usd: float
 
@@ -256,12 +262,20 @@ class _NoopEmail:
         return {"deliverable": True, "score": 0.5}
 
 
+class _NoopSearch:
+    async def search(self, query: str, *, max_results: int = 5) -> list[dict[str, Any]]:
+        return []
+
+    async def extract_url(self, url: str) -> dict[str, Any]:
+        return {"url": url, "title": "", "markdown": ""}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
         bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
-        social=_NoopSocial(), email=_NoopEmail(),
+        social=_NoopSocial(), email=_NoopEmail(), search=_NoopSearch(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -665,6 +679,36 @@ class _LiveEmail:
         return {"deliverable": deliverable, "score": 0.5 if deliverable else 0.0}
 
 
+class _LiveSearch:
+    """Tavily-backed search + Firecrawl-backed URL extraction.
+
+    Each method is independently optional: if only TAVILY_API_KEY is set,
+    `search` works but `extract_url` returns an empty payload. Falling back
+    to httpx for extract here is deliberately *not* done — the agent should
+    use the existing http client for raw fetches and this client for
+    LLM-clean output, so the two paths stay distinguishable in CAG logs."""
+
+    def __init__(self, tavily_api_key: str, firecrawl_api_key: str) -> None:
+        self._tavily_key = tavily_api_key
+        self._firecrawl_key = firecrawl_api_key
+
+    async def search(self, query: str, *, max_results: int = 5) -> list[dict[str, Any]]:
+        from clawbot.tools import tavily
+        if not self._tavily_key:
+            return []
+        return await tavily.search(
+            api_key=self._tavily_key,
+            query=query,
+            max_results=max_results,
+        )
+
+    async def extract_url(self, url: str) -> dict[str, Any]:
+        from clawbot.tools import firecrawl
+        if not self._firecrawl_key:
+            return {"url": url, "title": "", "markdown": ""}
+        return await firecrawl.extract(api_key=self._firecrawl_key, url=url)
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -684,6 +728,8 @@ def make_live_ctx(
     resend_api_key: str = "",
     email_from_address: str = "",
     bouncer_api_key: str = "",
+    tavily_api_key: str = "",
+    firecrawl_api_key: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -705,6 +751,11 @@ def make_live_ctx(
         if resend_api_key
         else _NoopEmail()
     )
+    search: SearchClient = (
+        _LiveSearch(tavily_api_key, firecrawl_api_key)
+        if (tavily_api_key or firecrawl_api_key)
+        else _NoopSearch()
+    )
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -720,6 +771,7 @@ def make_live_ctx(
         payments=payments,
         social=social,
         email=email,
+        search=search,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
