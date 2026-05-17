@@ -27,3 +27,20 @@ def test_skill_call_record_immutable():
     )
     with pytest.raises(AttributeError):
         rec.ok = False  # type: ignore
+
+
+import asyncio
+from clawbot.skill_ctx import SkillCtx, make_noop_ctx
+
+def test_noop_ctx_exposes_all_surfaces():
+    ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
+    assert ctx.caller_id == "test"
+    assert ctx.budget_usd == 1.0
+    # Every documented surface must be present
+    for surface in ("http", "sql", "llm", "vector", "secret", "fs", "time", "operator", "bus", "log"):
+        assert hasattr(ctx, surface), f"missing surface: {surface}"
+
+def test_noop_http_get_returns_empty():
+    ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
+    result = asyncio.run(ctx.http.get("https://example.com"))
+    assert result == {"status": 200, "text": "", "headers": {}}

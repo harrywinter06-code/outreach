@@ -43,3 +43,151 @@ class SkillCallRecord:
     latency_ms: int
     ok: bool
     error: str | None
+
+
+from typing import Protocol
+
+
+class HttpClient(Protocol):
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]: ...
+    async def post(self, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]: ...
+
+
+class SqlClient(Protocol):
+    async def query(self, sql: str, *args: Any) -> list[dict[str, Any]]: ...
+
+
+class LlmClient(Protocol):
+    async def complete(self, *, system: str, user: str, tier: str = "worker") -> str: ...
+
+
+class VectorClient(Protocol):
+    async def search(self, query: str, *, k: int = 5) -> list[dict[str, Any]]: ...
+    async def write(self, text: str, *, kind: str, metadata: dict[str, Any] | None = None) -> str: ...
+
+
+class SecretClient(Protocol):
+    def get(self, name: str) -> str: ...
+
+
+class FsClient(Protocol):
+    async def read(self, path: str) -> str: ...
+    async def write(self, path: str, content: str) -> None: ...
+    async def list(self, path: str) -> list[str]: ...
+
+
+class TimeClient(Protocol):
+    def now_iso(self) -> str: ...
+    def epoch_s(self) -> float: ...
+
+
+class OperatorClient(Protocol):
+    async def message(self, text: str, *, level: str = "info") -> None: ...
+    async def request_approval(self, prompt: str, *, timeout_s: float = 3600) -> bool: ...
+
+
+class BusClient(Protocol):
+    async def publish(self, topic: str, payload: dict[str, Any]) -> str: ...
+
+
+class LogClient(Protocol):
+    def info(self, msg: str, **kwargs: Any) -> None: ...
+    def warn(self, msg: str, **kwargs: Any) -> None: ...
+    def error(self, msg: str, **kwargs: Any) -> None: ...
+
+
+@dataclass(frozen=True)
+class SkillCtx:
+    http: HttpClient
+    sql: SqlClient
+    llm: LlmClient
+    vector: VectorClient
+    secret: SecretClient
+    fs: FsClient
+    time: TimeClient
+    operator: OperatorClient
+    bus: BusClient
+    log: LogClient
+    caller_id: str
+    budget_usd: float
+
+
+# -- No-op stubs used by tests and shadow mode -------------------------------
+
+
+class _NoopHttp:
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
+        return {"status": 200, "text": "", "headers": {}}
+
+    async def post(self, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+        return {"status": 200, "text": "", "headers": {}}
+
+
+class _NoopSql:
+    async def query(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        return []
+
+
+class _NoopLlm:
+    async def complete(self, *, system: str, user: str, tier: str = "worker") -> str:
+        return ""
+
+
+class _NoopVector:
+    async def search(self, query: str, *, k: int = 5) -> list[dict[str, Any]]:
+        return []
+
+    async def write(self, text: str, *, kind: str, metadata: dict[str, Any] | None = None) -> str:
+        return "noop-id"
+
+
+class _NoopSecret:
+    def get(self, name: str) -> str:
+        return ""
+
+
+class _NoopFs:
+    async def read(self, path: str) -> str:
+        return ""
+
+    async def write(self, path: str, content: str) -> None:
+        pass
+
+    async def list(self, path: str) -> list[str]:
+        return []
+
+
+class _NoopTime:
+    def now_iso(self) -> str:
+        return "1970-01-01T00:00:00+00:00"
+
+    def epoch_s(self) -> float:
+        return 0.0
+
+
+class _NoopOperator:
+    async def message(self, text: str, *, level: str = "info") -> None:
+        pass
+
+    async def request_approval(self, prompt: str, *, timeout_s: float = 3600) -> bool:
+        return False
+
+
+class _NoopBus:
+    async def publish(self, topic: str, payload: dict[str, Any]) -> str:
+        return "noop-msg-id"
+
+
+class _NoopLog:
+    def info(self, msg: str, **kwargs: Any) -> None: pass
+    def warn(self, msg: str, **kwargs: Any) -> None: pass
+    def error(self, msg: str, **kwargs: Any) -> None: pass
+
+
+def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
+    return SkillCtx(
+        http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
+        secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
+        bus=_NoopBus(), log=_NoopLog(),
+        caller_id=caller_id, budget_usd=budget_usd,
+    )
