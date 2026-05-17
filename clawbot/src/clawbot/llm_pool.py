@@ -4,6 +4,7 @@ All four expose OpenAI-compatible /chat/completions — single httpx client hand
 Rate limiting uses Redis per-minute counters (atomic INCR, multi-container safe).
 Falls back to in-memory counters when redis_url=None (tests).
 """
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -12,6 +13,8 @@ import httpx
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception
 
 from clawbot.config import Settings
+
+logger = logging.getLogger(__name__)
 
 Tier = Literal["executive", "worker"]
 
@@ -89,9 +92,28 @@ class LLMPool:
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> str:
-        """Send chat completion request, retrying on transient errors."""
-        provider = await self.acquire()
-        return await _call_with_retry(provider, messages, tier, temperature, max_tokens)
+        """Send chat completion request; rotates to the next provider on 4xx failures."""
+        n = len(self._providers)
+        last_exc: Exception | None = None
+        for _ in range(n):
+            provider = await self.acquire()
+            try:
+                return await _call_with_retry(provider, messages, tier, temperature, max_tokens)
+            except (RateLimitExceeded, AllProvidersExhausted):
+                raise
+            except httpx.HTTPStatusError as exc:
+                if 400 <= exc.response.status_code < 500:
+                    logger.warning(
+                        "Provider %s returned %s (%s) — skipping to next",
+                        provider.name, exc.response.status_code,
+                        exc.response.text[:120],
+                    )
+                    last_exc = exc
+                    continue
+                raise
+        raise AllProvidersExhausted(
+            f"All {n} providers failed with 4xx errors"
+        ) from last_exc
 
     async def _try_consume(self, provider: ProviderConfig) -> bool:
         if self._redis is not None:

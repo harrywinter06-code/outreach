@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     nim_api_key_5: str = ""
     nim_api_key_6: str = ""
     nim_base_url: str = "https://integrate.api.nvidia.com/v1"
-    # Nemotron-70B: NVIDIA's instruction-tuned reasoning variant, outperforms vanilla Llama-3.1-70B
-    nim_model_executive: str = "nvidia/llama-3.1-nemotron-70b-instruct"
+    # Llama 4 Maverick: 128-expert MoE, currently best available on NIM (Nemotron removed May 2026)
+    nim_model_executive: str = "meta/llama-4-maverick-17b-128e-instruct"
     nim_model_worker: str = "meta/llama-3.1-8b-instruct"
     nim_rpm: int = 40
     nim_rpd: int = 38_000
@@ -50,10 +50,10 @@ class Settings(BaseSettings):
     gemini_rpm: int = 15
     gemini_rpd: int = 1_500
 
-    # Cerebras — llama3.1-70b deprecated; 3.3-70b is current (same ultra-fast inference)
+    # Cerebras — llama3.3-70b removed May 2026; qwen-3-235b is the current top model (22B active, MoE)
     cerebras_api_key: str = ""
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    cerebras_model_executive: str = "llama3.3-70b"
+    cerebras_model_executive: str = "qwen-3-235b-a22b-instruct-2507"
     cerebras_model_worker: str = "llama3.1-8b"
     cerebras_rpm: int = 30
     cerebras_rpd: int = 14_400
@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://clawbot:clawbot@localhost:5432/clawbot"
     max_daily_spend_usd: float = 5.00
     kill_file_path: str = "/tmp/clawbot.KILL"
+    pause_file_path: str = "/tmp/clawbot.PAUSE"
 
     # Operator escalation — agents reach the human via the bus → JSONL + optional
     # ntfy.sh push and/or Telegram bot. Persistence to disk always happens; the
