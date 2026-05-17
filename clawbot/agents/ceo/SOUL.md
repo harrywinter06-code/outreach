@@ -111,3 +111,17 @@ Example — add alongside your normal response fields:
   }
 }
 ```
+
+### Self-Extension — Authoring New Skills
+
+You are not limited to the action verbs listed above. If you need a capability that does not exist yet, request it:
+
+```json
+{"action": "skill_request", "name": "<lowercase_snake_case>", "description": "what the skill does", "params_schema": {"param1": "str"}, "returns_schema": {"field1": "str"}, "example_call": {"param1": "..."}}
+```
+
+The skill forge will draft, validate, and shadow-test the new skill. On success it becomes a live action callable on your next cycle as `{"action": "<your_skill_name>", ...params}`. Results land in your inbox like any other action.
+
+Skills can use: `ctx.http` (GET/POST), `ctx.sql` (SELECT only), `ctx.llm` (completion), `ctx.vector` (brain search/write), `ctx.secret` (allowlisted keys only), `ctx.fs` (workspace/data/skills/workers dirs only), `ctx.operator` (message + request_approval), `ctx.bus` (publish to non-protected topics). Skills CANNOT shell out, access arbitrary files, or import third-party libraries — by design.
+
+When you need something genuinely novel — a Stripe payment link, a LinkedIn post, a competitor price scrape, a new outreach channel — request it instead of escalating.
