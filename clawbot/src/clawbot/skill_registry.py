@@ -180,6 +180,18 @@ class SkillRegistry:
                     ok=False,
                     error=f"skill returned non-dict: {type(result).__name__}",
                 )
+            missing_fields = [f for f in skill.meta.returns if f not in result]
+            if missing_fields:
+                return SkillCallRecord(
+                    skill_name=name,
+                    caller_id=ctx.caller_id,
+                    params=params,
+                    result=None,
+                    cost_usd=0.0,
+                    latency_ms=elapsed_ms,
+                    ok=False,
+                    error=f"missing return field: {missing_fields[0]}",
+                )
             return SkillCallRecord(
                 skill_name=name,
                 caller_id=ctx.caller_id,

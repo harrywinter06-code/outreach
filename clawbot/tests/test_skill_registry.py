@@ -92,3 +92,21 @@ def test_registry_hot_reloads_new_file(skills_dir):
 
     asyncio.run(add_and_wait())
     assert "added_at_runtime" in reg.list_names()
+
+
+BAD_RETURNS_SKILL = '''
+META = {"name": "wrong_returns", "description": "x", "params": {}, "returns": {"id": "str", "ok": "bool"}}
+async def run(ctx) -> dict:
+    return {"id": "x"}  # missing ok
+'''
+
+
+def test_registry_rejects_missing_return_fields(tmp_path: Path):
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "wrong_returns.py").write_text(BAD_RETURNS_SKILL)
+    reg = SkillRegistry(skills_dir=d)
+    reg.discover()
+    rec = asyncio.run(reg.call("wrong_returns", {}, make_noop_ctx(caller_id="t", budget_usd=0)))
+    assert rec.ok is False
+    assert "missing return field: ok" in rec.error
