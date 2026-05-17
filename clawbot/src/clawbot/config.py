@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     firecrawl_api_key: str = ""
 
+    # Account-management infrastructure — all optional.
+    # Without these, _LiveAccounts falls back to _NoopAccounts so existing
+    # behaviour is unchanged. Operator setup:
+    #   1. Buy a domain (~$10/yr) and enable Cloudflare Email Routing free tier
+    #   2. Generate vault key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    #   3. Create a company-type Issuing cardholder once in Stripe dashboard;
+    #      copy the ich_... id into STRIPE_ISSUING_CARDHOLDER_ID
+    accounts_vault_key: str = ""
+    accounts_db_path: str = "data/accounts.db"
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    email_domain: str = ""
+    stripe_issuing_cardholder_id: str = ""
+
     @property
     def active_provider_names(self) -> list[str]:
         names = [f"nim-{i+1}" for i in range(len(self.nim_api_keys))]
