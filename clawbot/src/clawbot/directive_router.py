@@ -276,6 +276,7 @@ class DirectiveRouter:
                 str(self._metrics_dir.parent / "agents" / "workers"),
                 str(self._metrics_dir.parent / "data"),
             ],
+            stripe_secret_key=settings.stripe_secret_key,
             tavily_api_key=settings.tavily_api_key,
             firecrawl_api_key=settings.firecrawl_api_key,
             accounts_vault_key=settings.accounts_vault_key,

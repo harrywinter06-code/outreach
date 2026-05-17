@@ -2,6 +2,7 @@ import json
 import uuid
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from clawbot.directive_router import DirectiveRouter
 
 
 def make_bus(messages_by_topic: dict):
@@ -116,3 +117,60 @@ async def test_unknown_action_acked_without_handler():
     router = make_router(bus)
     await router._poll_once()
     bus.ack.assert_called_once()
+
+
+async def test_handle_skill_call_threads_stripe_secret_key_to_make_live_ctx():
+    """Regression: stripe_secret_key must be passed so payments skills work in production."""
+    from unittest.mock import patch
+    from pathlib import Path
+
+    bus = MagicMock()
+    bus.ack = AsyncMock()
+    bus.publish_inbox = AsyncMock()
+
+    captured_kwargs = {}
+    def fake_make_live_ctx(**kwargs):
+        captured_kwargs.update(kwargs)
+        # Return a noop-shaped object so call() doesn't blow up downstream
+        from clawbot.skill_ctx import make_noop_ctx
+        return make_noop_ctx(caller_id=kwargs["caller_id"], budget_usd=kwargs["budget_usd"])
+
+    # REGISTRY must be set; patch it.
+    fake_registry = MagicMock()
+    fake_registry.call = AsyncMock(return_value=MagicMock(
+        ok=True, result={"ok": True}, error=None, skill_name="test_skill", latency_ms=10,
+    ))
+    fake_registry.is_canary = MagicMock(return_value=False)
+    fake_registry._record_live_call = MagicMock()
+    fake_registry.get_meta = MagicMock(return_value=MagicMock())
+
+    router = DirectiveRouter(
+        bus=bus,
+        causal_store=MagicMock(record_event=AsyncMock()),
+        registry=MagicMock(),
+        agent_factory=MagicMock(),
+        task_store=MagicMock(),
+        metrics_dir=Path("/tmp/test_metrics"),
+        brain=None,
+    )
+
+    with patch("clawbot.skill_ctx.make_live_ctx", side_effect=fake_make_live_ctx):
+        with patch("clawbot.skill_registry.REGISTRY", fake_registry):
+            with patch("clawbot.config.settings") as fake_settings:
+                fake_settings.stripe_secret_key = "sk_test_THREAD_ME"
+                fake_settings.tavily_api_key = ""
+                fake_settings.firecrawl_api_key = ""
+                fake_settings.accounts_vault_key = ""
+                fake_settings.accounts_db_path = "data/accounts.db"
+                fake_settings.imap_host = ""
+                fake_settings.imap_port = 993
+                fake_settings.imap_user = ""
+                fake_settings.imap_password = ""
+                fake_settings.email_domain = ""
+                await router._handle_skill_call(
+                    skill_name="test_skill", params={}, chain_id="c-001", from_agent="cmo",
+                )
+
+    assert captured_kwargs.get("stripe_secret_key") == "sk_test_THREAD_ME", (
+        f"stripe_secret_key not threaded to make_live_ctx; got: {list(captured_kwargs.keys())}"
+    )
