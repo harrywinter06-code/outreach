@@ -129,14 +129,32 @@ class DirectiveRouter:
             # do NOT ack — stays in pending for retry
 
     def _get_handler(self, action: str):
-        return {
+        hardcoded = {
             "hire": self._handle_hire,
             "fire": self._handle_fire,
             "assign_task": self._handle_assign_task,
             "publish_product": self._handle_publish_product,
             "message": self._handle_message_action,
             "web_research": self._handle_web_research,
-        }.get(action)
+            # web_search and browser_task handlers from 100-hands plan, if present:
+        }
+        if hasattr(self, "_handle_web_search"):
+            hardcoded["web_search"] = self._handle_web_search
+        if hasattr(self, "_handle_browser_task"):
+            hardcoded["browser_task"] = self._handle_browser_task
+        if action in hardcoded:
+            return hardcoded[action]
+
+        # Fallback: any registered skill becomes an action.
+        from clawbot.skill_registry import REGISTRY
+        if REGISTRY is not None and REGISTRY.get_meta(action) is not None:
+            async def _wrapper(data: dict, chain_id: str, from_agent: str) -> None:
+                # Skills consume the whole `data` minus framing fields as params.
+                framing = {"action", "directive", "priority", "next_wakeup_s", "escalate"}
+                params = {k: v for k, v in data.items() if k not in framing}
+                await self._handle_skill_call(action, params, chain_id, from_agent)
+            return _wrapper
+        return None
 
     async def _handle_hire(self, data: dict, chain_id: str, from_agent: str) -> None:
         role = str(data.get("role", data.get("directive", "analyst")))[:80]
@@ -222,3 +240,67 @@ class DirectiveRouter:
                 metadata={"url": url, "query": query, "chain_id": chain_id},
             )
         logger.info("Web research complete: %s (%d chars)", url, len(content))
+
+    async def _handle_skill_call(
+        self, skill_name: str, params: dict, chain_id: str, from_agent: str,
+    ) -> None:
+        """Dispatch a registered skill, publish result to caller inbox.
+
+        The reason this is the integration point (rather than agents calling
+        the registry directly): every action already flows through this router,
+        gets CAG-logged, gets ack semantics, gets one error-handling surface.
+        Skills inherit all of that for free.
+        """
+        from clawbot.skill_registry import REGISTRY
+        from clawbot.skill_ctx import make_live_ctx
+        if REGISTRY is None:
+            raise RuntimeError("skill registry not initialised")
+
+        ctx = make_live_ctx(
+            caller_id=from_agent,
+            budget_usd=0.10,  # per-call soft cap; daily cap still applies via Monitor
+            llm_pool=getattr(self._factory, "_pool", None),
+            bus=self._bus,
+            brain=self._brain,
+            db_pool=getattr(self, "_db_pool", None),
+            escalation=None,
+            secret_allowlist=[
+                "GUMROAD_API_KEY", "STRIPE_SECRET_KEY",
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+            ],
+            workspace_root=str(self._metrics_dir / "workspace"),
+            fs_allowed_roots=[
+                str(self._metrics_dir.parent / "agents" / "skills"),
+                str(self._metrics_dir.parent / "agents" / "workers"),
+                str(self._metrics_dir.parent / "data"),
+            ],
+        )
+
+        record = await REGISTRY.call(skill_name, params, ctx)
+
+        if record.ok:
+            summary = str(record.result)[:1500]
+            await self._bus.publish_inbox(from_agent, {
+                "from": f"skill:{skill_name}",
+                "ok": True,
+                "message": f"{skill_name} returned: {summary}",
+                "chain_id": chain_id,
+            })
+            if self._brain is not None:
+                try:
+                    await self._brain.write(
+                        f"Skill call [{skill_name}] params={params}: {summary}",
+                        category="skill_result",
+                        metadata={"skill": skill_name, "chain_id": chain_id},
+                    )
+                except Exception:
+                    pass
+            logger.info("Skill complete: %s for %s (%dms)", skill_name, from_agent, record.latency_ms)
+        else:
+            await self._bus.publish_inbox(from_agent, {
+                "from": f"skill:{skill_name}",
+                "ok": False,
+                "message": f"{skill_name} failed: {record.error}",
+                "chain_id": chain_id,
+            })
+            logger.warning("Skill failed: %s for %s — %s", skill_name, from_agent, record.error)
