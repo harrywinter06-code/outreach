@@ -81,3 +81,34 @@ def test_live_secret_rejects_non_allowlisted():
     import pytest
     with pytest.raises(PermissionError, match="not allowlisted"):
         ctx.secret.get("BAR")
+
+
+# -- Task 19: ctx.browser tests -----------------------------------------------
+
+from unittest.mock import patch
+
+
+def test_noop_browser_returns_empty_success():
+    ctx = make_noop_ctx(caller_id="t", budget_usd=1.0)
+    result = asyncio.run(ctx.browser.run(task="open example.com"))
+    assert result["success"] is True
+    assert result["output"] == ""
+
+
+def test_live_browser_dispatches_to_browser_worker():
+    with patch("clawbot.browser_worker.run_browser_task", AsyncMock(return_value=MagicMock(
+        success=True, output="page title: Example Domain", error="",
+    ))) as mock_run:
+        from clawbot.skill_ctx import _LiveBrowser
+        pool = MagicMock()
+        bc = _LiveBrowser(pool=pool, max_steps=15)
+        result = asyncio.run(bc.run(task="get title of example.com"))
+        mock_run.assert_called_once()
+        assert "Example Domain" in result["output"]
+        assert result["success"] is True
+
+
+def test_live_browser_caps_concurrent_instances():
+    from clawbot.skill_ctx import _LiveBrowser
+    bc = _LiveBrowser(pool=MagicMock(), max_steps=15, max_concurrent=2)
+    assert bc._sem._value == 2

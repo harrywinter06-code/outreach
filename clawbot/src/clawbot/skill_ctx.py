@@ -96,6 +96,18 @@ class LogClient(Protocol):
     def error(self, msg: str, **kwargs: Any) -> None: ...
 
 
+class BrowserClient(Protocol):
+    async def run(self, *, task: str, max_steps: int = 15) -> dict[str, Any]: ...
+
+
+class PaymentsClient(Protocol):
+    async def create_product(self, *, name: str, description: str) -> dict[str, Any]: ...
+    async def create_price(self, *, product_id: str, amount_pence: int, currency: str = "gbp", recurring: bool = False) -> dict[str, Any]: ...
+    async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]: ...
+    async def list_charges(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
+    async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -108,6 +120,8 @@ class SkillCtx:
     operator: OperatorClient
     bus: BusClient
     log: LogClient
+    browser: BrowserClient
+    payments: PaymentsClient
     caller_id: str
     budget_usd: float
 
@@ -184,11 +198,33 @@ class _NoopLog:
     def error(self, msg: str, **kwargs: Any) -> None: pass
 
 
+class _NoopBrowser:
+    async def run(self, *, task: str, max_steps: int = 15) -> dict[str, Any]:
+        return {"success": True, "output": "", "error": "", "task": task}
+
+
+class _NoopPayments:
+    async def create_product(self, **kwargs: Any) -> dict[str, Any]:
+        return {"id": "prod_noop_abc", **kwargs}
+
+    async def create_price(self, **kwargs: Any) -> dict[str, Any]:
+        return {"id": "price_noop_abc", **kwargs}
+
+    async def create_payment_link(self, **kwargs: Any) -> dict[str, Any]:
+        return {"id": "plink_noop_abc", "url": "https://buy.stripe.com/noop", **kwargs}
+
+    async def list_charges(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    async def refund(self, **kwargs: Any) -> dict[str, Any]:
+        return {"id": "re_noop_abc", **kwargs}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
-        bus=_NoopBus(), log=_NoopLog(),
+        bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -202,6 +238,11 @@ from datetime import datetime, UTC
 from pathlib import Path
 
 import httpx
+
+try:
+    import stripe  # type: ignore
+except ImportError:
+    stripe = None  # type: ignore
 
 
 _PROTECTED_TOPICS = frozenset({
@@ -374,6 +415,68 @@ class _LiveLog:
         self._logger.error("%s %s", msg, kwargs or "")
 
 
+class _LiveBrowser:
+    """Per-skill browser handle. Caps concurrent Chromium instances at max_concurrent
+    because the Hetzner CX21 only has 4GB RAM — three concurrent Chromiums + the
+    container + redis + postgres + fastembed eats it.
+    """
+
+    def __init__(self, pool: Any, max_steps: int = 15, max_concurrent: int = 2) -> None:
+        self._pool = pool
+        self._max_steps = max_steps
+        self._sem = asyncio.Semaphore(max_concurrent)
+
+    async def run(self, *, task: str, max_steps: int = 15) -> dict[str, Any]:
+        from clawbot.browser_worker import run_browser_task
+        async with self._sem:
+            result = await run_browser_task(task=task, pool=self._pool, max_steps=max_steps)
+        return {
+            "success": result.success, "output": result.output,
+            "error": result.error, "task": task,
+        }
+
+
+class _LivePayments:
+    """Stripe wrapper. Synchronous SDK calls are run on the default executor
+    via asyncio.to_thread to avoid blocking the event loop."""
+
+    def __init__(self, secret_key: str) -> None:
+        if not secret_key:
+            raise ValueError("STRIPE_SECRET_KEY not set — _LivePayments cannot operate")
+        if stripe is None:
+            raise RuntimeError("stripe SDK not installed")
+        stripe.api_key = secret_key
+
+    async def create_product(self, *, name: str, description: str) -> dict[str, Any]:
+        prod = await asyncio.to_thread(stripe.Product.create, name=name, description=description)
+        return prod.to_dict()
+
+    async def create_price(self, *, product_id: str, amount_pence: int, currency: str = "gbp", recurring: bool = False) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"product": product_id, "unit_amount": amount_pence, "currency": currency}
+        if recurring:
+            kwargs["recurring"] = {"interval": "month"}
+        price = await asyncio.to_thread(stripe.Price.create, **kwargs)
+        return price.to_dict()
+
+    async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]:
+        link = await asyncio.to_thread(
+            stripe.PaymentLink.create,
+            line_items=[{"price": price_id, "quantity": quantity}],
+        )
+        return link.to_dict()
+
+    async def list_charges(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        charges = await asyncio.to_thread(stripe.Charge.list, limit=limit)
+        return [c.to_dict() for c in charges.auto_paging_iter()][:limit]
+
+    async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"charge": charge_id}
+        if amount_pence is not None:
+            kwargs["amount"] = amount_pence
+        ref = await asyncio.to_thread(stripe.Refund.create, **kwargs)
+        return ref.to_dict()
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -386,6 +489,7 @@ def make_live_ctx(
     secret_allowlist: list[str],
     workspace_root: str,
     fs_allowed_roots: list[str] | None = None,
+    stripe_secret_key: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -394,6 +498,9 @@ def make_live_ctx(
     src/clawbot/ via fs — those edits go through coder.py.
     """
     extra_roots = fs_allowed_roots or []
+    payments: PaymentsClient = (
+        _LivePayments(stripe_secret_key) if stripe_secret_key else _NoopPayments()
+    )
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -405,6 +512,8 @@ def make_live_ctx(
         operator=_LiveOperator(escalation, bus, caller_id),
         bus=_LiveBus(bus, caller_id),
         log=_LiveLog(caller_id),
+        browser=_LiveBrowser(pool=llm_pool),
+        payments=payments,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
