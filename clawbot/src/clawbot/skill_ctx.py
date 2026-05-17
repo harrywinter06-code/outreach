@@ -106,6 +106,9 @@ class PaymentsClient(Protocol):
     async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]: ...
     async def list_charges(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
     async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]: ...
+    async def issue_card(self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str) -> dict[str, Any]: ...
+    async def freeze_card(self, *, card_id: str) -> dict[str, Any]: ...
+    async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]: ...
 
 
 class SocialClient(Protocol):
@@ -238,6 +241,19 @@ class _NoopPayments:
 
     async def refund(self, **kwargs: Any) -> dict[str, Any]:
         return {"id": "re_noop_abc", **kwargs}
+
+    async def issue_card(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "id": "ic_noop_abc", "last4": "4242",
+            "exp_month": 12, "exp_year": 2030, "status": "active",
+            "cardholder": kwargs.get("cardholder_id", ""),
+        }
+
+    async def freeze_card(self, *, card_id: str) -> dict[str, Any]:
+        return {"id": card_id, "status": "canceled"}
+
+    async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        return []
 
 
 class _NoopSocial:
@@ -526,6 +542,36 @@ class _LivePayments:
             kwargs["amount"] = amount_pence
         ref = await asyncio.to_thread(stripe.Refund.create, **kwargs)
         return ref.to_dict()
+
+    async def issue_card(
+        self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str,
+    ) -> dict[str, Any]:
+        amount_cents = daily_limit_usd * 100
+        card = await asyncio.to_thread(
+            stripe.issuing.Card.create,  # type: ignore[union-attr]
+            cardholder=cardholder_id,
+            currency="usd",
+            type="virtual",
+            spending_controls={
+                "spending_limits": [
+                    {"amount": amount_cents, "interval": "daily"},
+                ],
+            },
+            metadata={"agent_id": agent_id},
+        )
+        return card.to_dict()
+
+    async def freeze_card(self, *, card_id: str) -> dict[str, Any]:
+        card = await asyncio.to_thread(
+            stripe.issuing.Card.modify, card_id, status="canceled",  # type: ignore[union-attr]
+        )
+        return card.to_dict()
+
+    async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        auths = await asyncio.to_thread(
+            stripe.issuing.Authorization.list, card=card_id, limit=limit,  # type: ignore[union-attr]
+        )
+        return [a.to_dict() for a in auths.auto_paging_iter()][:limit]
 
 
 class _LiveSocial:
