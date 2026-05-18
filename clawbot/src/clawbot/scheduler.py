@@ -369,6 +369,10 @@ class Scheduler:
         tasks.append(asyncio.create_task(
             self._chat_responder_loop(), name="chat-responder"
         ))
+        tasks.append(asyncio.create_task(
+            self._run_company_fitness_snapshot_loop(),
+            name="company-fitness-snapshot",
+        ))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:
             task.cancel()
@@ -1635,6 +1639,25 @@ class Scheduler:
                         break  # Spawn at most one per cycle
             except Exception as exc:
                 logger.error("Auto-diversification loop iteration failed: %s", exc)
+
+    # ── Company fitness snapshot (Task 4) ───────────────────────────────────
+
+    async def _run_company_fitness_snapshot_loop(self) -> None:
+        """Once per UTC day, compute + persist the company fitness snapshot."""
+        from clawbot.company_fitness import compute_and_snapshot
+        last_snapshot_date = None
+        while True:
+            now = datetime.now(UTC)
+            today_str = now.date().isoformat()
+            if today_str != last_snapshot_date:
+                if hasattr(self, "_db_pool") and self._db_pool is not None:
+                    try:
+                        score = await compute_and_snapshot(db_pool=self._db_pool)
+                        logger.info("Company fitness snapshot: score=%.3f", score.score)
+                        last_snapshot_date = today_str
+                    except Exception as exc:
+                        logger.error("Company fitness snapshot failed: %s", exc)
+            await asyncio.sleep(900)  # check every 15 min; only acts once per day
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

@@ -257,3 +257,21 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_capital_ledger_agent "
                 "ON capital_ledger(agent_id, created_at DESC)"
             )
+        # Portfolio operator Task 4 — company fitness snapshots
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS company_fitness_snapshots (
+                    snapshot_id BIGSERIAL PRIMARY KEY,
+                    snapshot_date DATE NOT NULL UNIQUE,
+                    score NUMERIC(4, 3) NOT NULL,
+                    revenue_7d_gbp NUMERIC(12, 2) NOT NULL,
+                    plans_active INTEGER NOT NULL,
+                    plans_advanced_7d INTEGER NOT NULL,
+                    plans_pivoted_7d INTEGER NOT NULL,
+                    capital_deployed_7d_gbp NUMERIC(12, 2) NOT NULL,
+                    skill_calls_7d INTEGER NOT NULL,
+                    skill_call_success_rate NUMERIC(4, 3) NOT NULL,
+                    breakdown TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
