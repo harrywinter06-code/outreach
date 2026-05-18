@@ -110,6 +110,7 @@ class PaymentsClient(Protocol):
     async def issue_card(self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str) -> dict[str, Any]: ...
     async def freeze_card(self, *, card_id: str) -> dict[str, Any]: ...
     async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    async def respond_to_dispute(self, *, dispute_id: str, evidence: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class SocialClient(Protocol):
@@ -185,6 +186,12 @@ class MediaClient(Protocol):
     async def image_upscale(self, *, image_url: str, output_path: str, scale: int = 2) -> dict[str, Any]: ...
 
 
+class DevClient(Protocol):
+    async def exec_allowed_command(
+        self, *, cmd_name: str, args: list[str], cwd: str,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -205,6 +212,7 @@ class SkillCtx:
     accounts: AccountsClient
     revenue: RevenueClient
     media: MediaClient
+    dev: DevClient
     caller_id: str
     budget_usd: float
 
@@ -314,6 +322,9 @@ class _NoopPayments:
 
     async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]:
         return []
+
+    async def respond_to_dispute(self, *, dispute_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+        return {"id": dispute_id, "status": "noop", "evidence_submitted": True}
 
 
 class _NoopSocial:
@@ -443,6 +454,14 @@ class _NoopMedia:
         return {"path": output_path, "scale": scale}
 
 
+class _NoopDev:
+    async def exec_allowed_command(
+        self, *, cmd_name: str, args: list[str], cwd: str,
+    ) -> dict[str, Any]:
+        return {"stdout": "", "stderr": "", "returncode": 0,
+                "cmd_name": cmd_name, "args": args, "cwd": cwd}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
@@ -452,6 +471,7 @@ def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         accounts=_NoopAccounts(),
         revenue=_NoopRevenue(),
         media=_NoopMedia(),
+        dev=_NoopDev(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -742,6 +762,14 @@ class _LivePayments:
             stripe.issuing.Authorization.list, card=card_id, limit=limit,  # type: ignore[union-attr]
         )
         return [a.to_dict() for a in auths.data]
+
+    async def respond_to_dispute(
+        self, *, dispute_id: str, evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        dispute = await asyncio.to_thread(
+            stripe.Dispute.modify, dispute_id, evidence=evidence,  # type: ignore[union-attr]
+        )
+        return dispute.to_dict()
 
 
 class _LiveSocial:
@@ -1595,6 +1623,58 @@ class _LiveMedia:
         return {"path": output_path, "scale": scale}
 
 
+_DEV_ALLOWED_COMMANDS: frozenset[str] = frozenset({
+    "npm_publish", "pip_wheel", "twine_upload",
+    "docker_build", "docker_push", "docker_tag",
+    "git_push", "git_clone",
+})
+
+_DEV_COMMAND_TEMPLATES: dict[str, list[str]] = {
+    "npm_publish": ["npm", "publish"],
+    "pip_wheel": ["python", "-m", "pip", "wheel", "."],
+    "twine_upload": ["twine", "upload", "dist/*"],
+    "docker_build": ["docker", "build"],
+    "docker_push": ["docker", "push"],
+    "docker_tag": ["docker", "tag"],
+    "git_push": ["git", "push", "origin"],
+    "git_clone": ["git", "clone", "--depth=1"],
+}
+
+
+class _LiveDev:
+    """Allowlisted command execution for build/publish skills.
+
+    The allowlist + path-traversal check on cwd is the trust boundary — even a
+    compromised skill can only invoke commands in _DEV_ALLOWED_COMMANDS, and
+    only within allowed_root. Arguments are passed as a list (no shell
+    interpolation) so an attacker-controlled string can't break out via $().
+    """
+
+    def __init__(self, *, allowed_root: str) -> None:
+        self._root = Path(allowed_root).resolve()
+
+    async def exec_allowed_command(
+        self, *, cmd_name: str, args: list[str], cwd: str,
+    ) -> dict[str, Any]:
+        if cmd_name not in _DEV_ALLOWED_COMMANDS:
+            raise PermissionError(f"command {cmd_name!r} not in allowlist")
+        p = Path(cwd).resolve()
+        if not str(p).startswith(str(self._root)):
+            raise PermissionError(f"cwd outside allowed root: {cwd}")
+        import subprocess as _sp
+        base = _DEV_COMMAND_TEMPLATES[cmd_name]
+        full = base + list(args)
+        proc = await asyncio.to_thread(
+            _sp.run, full, cwd=str(p),
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+        return {
+            "stdout": proc.stdout[-4000:] if proc.stdout else "",
+            "stderr": proc.stderr[-4000:] if proc.stderr else "",
+            "returncode": proc.returncode,
+        }
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -1634,6 +1714,7 @@ def make_live_ctx(
     openai_api_key: str = "",
     removebg_api_key: str = "",
     screenshot_api_key: str = "",
+    dev_allowed_root: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -1712,6 +1793,11 @@ def make_live_ctx(
         else _NoopMedia()
     )
 
+    dev: DevClient = (
+        _LiveDev(allowed_root=dev_allowed_root)
+        if dev_allowed_root else _NoopDev()
+    )
+
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -1731,6 +1817,7 @@ def make_live_ctx(
         accounts=accounts,
         revenue=revenue,
         media=media,
+        dev=dev,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )

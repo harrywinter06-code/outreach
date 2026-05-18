@@ -198,3 +198,20 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_experiment_observations_exp_arm "
                 "ON experiment_observations (experiment_id, arm)"
             )
+        # Phase H Task 36 — support tickets
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    assigned_to TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tickets_status_updated "
+                "ON tickets (status, updated_at DESC)"
+            )

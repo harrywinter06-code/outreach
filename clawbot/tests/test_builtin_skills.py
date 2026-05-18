@@ -60,6 +60,33 @@ EXPECTED_BUILTINS = {
     "video_generate", "video_subtitle", "video_dub",
     "podcast_generate", "logo_generate", "favicon_generate",
     "image_remove_bg", "image_upscale", "screenshot_annotate",
+    # Phase H — Task 36 support pack
+    "support_send_email_reply", "support_assign_ticket", "support_canned_response",
+    "chat_widget_respond_live", "calendar_book_slot", "survey_send_nps",
+    # Phase H — Task 28 launch pack
+    "producthunt_schedule", "betalist_submit", "indiehackers_post",
+    "hn_show_submit", "directory_submit_g2", "directory_submit_capterra",
+    "directory_submit_alternative_to", "haro_respond",
+    "prnewswire_submit", "podcast_pitch",
+    # Phase H — Task 26 finance + UK-gov pack
+    "companies_house_search", "companies_house_get_company",
+    "companies_house_get_officers", "companies_house_get_filings",
+    "companies_house_monitor_filings", "hmrc_check_vat_number",
+    "freeagent_create_invoice", "freeagent_record_expense",
+    "xero_reconcile_transaction",
+    "compute_runway_months", "ir35_determine_status",
+    # Phase H — Task 35 dev/infra pack
+    "github_create_repo", "github_create_release", "github_star_repo",
+    "github_search_issues",
+    "npm_publish", "pypi_publish", "docker_build_and_push",
+    "dns_set_record", "dns_verify_propagation", "ssl_check_expiry",
+    "domain_check_availability", "domain_register",
+    "cloudflare_purge_cache", "cloudflare_deploy_pages_site",
+    # Phase H — Task 37 compliance pack
+    "sanctions_check", "kyc_verify_address", "fraud_score_transaction",
+    "captcha_solve", "gdpr_data_export", "gdpr_delete_user",
+    "tos_generate", "privacy_policy_generate",
+    "dmca_takedown_request", "esign_send", "dispute_respond",
 }
 
 
