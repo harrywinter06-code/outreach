@@ -158,6 +158,11 @@ async def main() -> None:
         stall_threshold=settings.business_artifact_stall_threshold,
     )
 
+    # Swarm Phase Z2.5c — wire the BusinessStore into the Stripe webhook
+    # module so /webhook/stripe can route incoming payments to record_revenue.
+    from clawbot import stripe_webhook
+    stripe_webhook.BUSINESS_STORE = business_store
+
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)

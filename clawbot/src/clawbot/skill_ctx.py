@@ -104,7 +104,7 @@ class BrowserClient(Protocol):
 class PaymentsClient(Protocol):
     async def create_product(self, *, name: str, description: str) -> dict[str, Any]: ...
     async def create_price(self, *, product_id: str, amount_pence: int, currency: str = "gbp", recurring: bool = False) -> dict[str, Any]: ...
-    async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]: ...
+    async def create_payment_link(self, *, price_id: str, quantity: int = 1, metadata: dict[str, str] | None = None) -> dict[str, Any]: ...
     async def list_charges(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
     async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]: ...
     async def issue_card(self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str) -> dict[str, Any]: ...
@@ -793,16 +793,24 @@ class _LivePayments:
         price = await asyncio.to_thread(stripe.Price.create, **kwargs)
         return price.to_dict()
 
-    async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]:
+    async def create_payment_link(
+        self, *, price_id: str, quantity: int = 1,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         from decimal import Decimal
         await self._enforce_capital_gates(
             prospective_amount_gbp=Decimal("0"), agent_id="system",
         )
-        link = await asyncio.to_thread(
-            stripe.PaymentLink.create,
-            line_items=[{"price": price_id, "quantity": quantity}],
-            api_key=self._api_key,
-        )
+        # Z2.5c: metadata (including business_id) is critical for webhook
+        # routing. Stripe propagates it onto Charges originating from this
+        # payment link, so the webhook can match payment → business.
+        kwargs = {
+            "line_items": [{"price": price_id, "quantity": quantity}],
+            "api_key": self._api_key,
+        }
+        if metadata:
+            kwargs["metadata"] = metadata
+        link = await asyncio.to_thread(stripe.PaymentLink.create, **kwargs)
         result = link.to_dict()
         # Record to ledger as a payment_link_created event (zero amount).
         if self._capital_ledger is not None:

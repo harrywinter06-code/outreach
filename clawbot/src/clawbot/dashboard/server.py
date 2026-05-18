@@ -434,6 +434,10 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # Swarm Z2.5c — Stripe webhook for business-attributed revenue capture.
+    from clawbot.stripe_webhook import get_router as get_stripe_router
+    app.include_router(get_stripe_router())
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         return HTMLResponse((static_dir / "index.html").read_text(encoding="utf-8"))

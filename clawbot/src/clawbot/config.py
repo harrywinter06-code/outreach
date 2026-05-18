@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     business_cycle_interval_s: float = Field(default=1800.0, ge=60.0, le=86_400.0)
     # Cycles without an artifact before kill clock shortens
     business_artifact_stall_threshold: int = Field(default=3, ge=1, le=20)
+
+    # Z2.5c — Stripe webhook signing secret. Without it the webhook accepts
+    # unsigned POSTs in dev mode (and logs a loud warning). One-time
+    # operator action: Stripe dashboard → Developers → Webhooks → copy secret.
+    stripe_webhook_secret: str = ""
     # Probation: zero £ past this age → kill. Hard kill: <£5 past this age.
     swarm_probation_days: float = Field(default=14.0, ge=1.0, le=365.0)
     swarm_hard_kill_days: float = Field(default=21.0, ge=1.0, le=365.0)
