@@ -18,23 +18,9 @@ class HypothesisStore:
         self._max_active = max_active
 
     async def init_schema(self) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS active_hypothesis (
-                    hypothesis_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    kill_criteria TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    weight NUMERIC(4, 3) NOT NULL DEFAULT 1.0,
-                    progress_score NUMERIC(4, 3) NOT NULL DEFAULT 0.0,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    killed_at TIMESTAMPTZ
-                )
-            """)
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
-            )
+        """No-op — schema lives in db.Database.init_schema (single source of truth).
+        Kept for API stability with callers like maybe_seed_h1."""
+        return None
 
     async def add_hypothesis(
         self, *, name: str, description: str, kill_criteria: dict,
@@ -43,36 +29,49 @@ class HypothesisStore:
         """Append a new active hypothesis. Raises RuntimeError if the portfolio
         is already at MAX_ACTIVE_HYPOTHESES. To replace an existing entry, call
         kill_hypothesis_by_id first."""
+        new_id = uuid.uuid4().hex
         async with self._pool.acquire() as conn:
-            count_row = await conn.fetchrow(
-                "SELECT COUNT(*) AS n FROM active_hypothesis WHERE status='active'"
-            )
-            current = int(count_row["n"]) if count_row else 0
-            if current >= self._max_active:
-                raise RuntimeError(
-                    f"portfolio_full: {current} active hypotheses, cap is {self._max_active}. "
-                    f"Kill one before adding another."
+            async with conn.transaction():
+                # Lock all active rows to serialise concurrent adds.
+                # Without this, two concurrent COUNT-then-INSERT calls can both
+                # observe under-cap and both insert, exceeding the cap.
+                await conn.execute(
+                    "SELECT hypothesis_id FROM active_hypothesis "
+                    "WHERE status='active' FOR UPDATE"
                 )
-            new_id = uuid.uuid4().hex
-            await conn.execute(
-                "INSERT INTO active_hypothesis (hypothesis_id, name, description, "
-                "kill_criteria, status, weight) VALUES ($1, $2, $3, $4, 'active', $5)",
-                new_id, name, description, json.dumps(kill_criteria), float(weight),
-            )
+                count_row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n FROM active_hypothesis WHERE status='active'"
+                )
+                current = int(count_row["n"]) if count_row else 0
+                if current >= self._max_active:
+                    raise RuntimeError(
+                        f"portfolio_full: {current} active hypotheses, cap is {self._max_active}. "
+                        f"Kill one before adding another."
+                    )
+                await conn.execute(
+                    "INSERT INTO active_hypothesis (hypothesis_id, name, description, "
+                    "kill_criteria, status, weight) VALUES ($1, $2, $3, $4, 'active', $5)",
+                    new_id, name, description, json.dumps(kill_criteria), float(weight),
+                )
         return new_id
 
     async def set_active(self, *, name: str, description: str, kill_criteria: dict) -> str:
         """Backwards-compat: single-active behaviour. Kills any existing active
         rows then adds this one with weight=1.0. Used by the H1 seed and any
         legacy caller. New code should use add_hypothesis."""
+        new_id = uuid.uuid4().hex
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE active_hypothesis SET status='superseded', killed_at=NOW() "
-                "WHERE status='active'"
-            )
-        return await self.add_hypothesis(
-            name=name, description=description, kill_criteria=kill_criteria, weight=1.0,
-        )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE active_hypothesis SET status='superseded', killed_at=NOW() "
+                    "WHERE status='active'"
+                )
+                await conn.execute(
+                    "INSERT INTO active_hypothesis (hypothesis_id, name, description, "
+                    "kill_criteria, status, weight) VALUES ($1, $2, $3, $4, 'active', 1.0)",
+                    new_id, name, description, json.dumps(kill_criteria),
+                )
+        return new_id
 
     async def get_active(self) -> dict | None:
         """Backwards-compat: returns the single highest-weight active hypothesis."""
@@ -115,21 +114,39 @@ class HypothesisStore:
         ]
 
     async def kill_active(self, *, reason: str) -> None:
-        """Backwards-compat: kills ALL active hypotheses. New code should use
-        kill_hypothesis_by_id to kill exactly one."""
+        """Backwards-compat: kills ALL active hypotheses and cascades their plans.
+        New code should use kill_hypothesis_by_id to kill exactly one."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE active_hypothesis SET status='killed', killed_at=NOW() "
-                "WHERE status='active'"
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE active_hypothesis SET status='killed', killed_at=NOW() "
+                    "WHERE status='active'"
+                )
+                # Cascade: abandon plans linked to any hypothesis just killed.
+                # NULL hypothesis_id plans (legacy/pre-link) are untouched.
+                await conn.execute(
+                    "UPDATE plans SET status='abandoned', updated_at=NOW() "
+                    "WHERE hypothesis_id IN ("
+                    "  SELECT hypothesis_id FROM active_hypothesis "
+                    "  WHERE status='killed' AND killed_at >= NOW() - INTERVAL '1 second'"
+                    ") AND status IN ('active', 'pending')"
+                )
 
     async def kill_hypothesis_by_id(self, *, hypothesis_id: str, reason: str) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE active_hypothesis SET status='killed', killed_at=NOW() "
-                "WHERE hypothesis_id=$1 AND status='active'",
-                hypothesis_id,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE active_hypothesis SET status='killed', killed_at=NOW() "
+                    "WHERE hypothesis_id=$1 AND status='active'",
+                    hypothesis_id,
+                )
+                # Cascade: abandon all plans linked to this hypothesis.
+                # NULL hypothesis_id plans (legacy/pre-link) are untouched.
+                await conn.execute(
+                    "UPDATE plans SET status='abandoned', updated_at=NOW() "
+                    "WHERE hypothesis_id=$1 AND status IN ('active', 'pending')",
+                    hypothesis_id,
+                )
 
     async def update_progress_score(self, *, hypothesis_id: str, score: float) -> None:
         async with self._pool.acquire() as conn:

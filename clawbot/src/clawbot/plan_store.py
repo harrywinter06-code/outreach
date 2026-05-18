@@ -157,15 +157,17 @@ class PlanStore:
         """When a hypothesis is killed, mark all its plans as abandoned.
 
         Returns the number of plan rows updated. The `reason` is currently not
-        persisted (no plans.notes column); it appears in logs only."""
+        persisted (no plans.notes column); it appears in logs only.
+
+        Note: kill_hypothesis_by_id in HypothesisStore cascades this automatically
+        inside a single transaction. This method remains callable for explicit use."""
         async with self._pool.acquire() as conn:
-            result = await conn.execute(
+            # Use RETURNING to count rows directly — more robust than parsing
+            # asyncpg's command status string format.
+            rows = await conn.fetch(
                 "UPDATE plans SET status='abandoned', updated_at=NOW() "
-                "WHERE hypothesis_id=$1 AND status IN ('active', 'pending')",
+                "WHERE hypothesis_id=$1 AND status IN ('active', 'pending') "
+                "RETURNING plan_id",
                 hypothesis_id,
             )
-        # asyncpg returns "UPDATE N" as the command status; parse N
-        try:
-            return int(result.split()[-1])
-        except (ValueError, IndexError):
-            return 0
+        return len(rows)
