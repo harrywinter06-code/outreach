@@ -384,6 +384,10 @@ class Scheduler:
             self._run_company_fitness_snapshot_loop(),
             name="company-fitness-snapshot",
         ))
+        tasks.append(_ct(
+            self._run_charge_importer_loop(),
+            name="charge-importer",
+        ))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:
             task.cancel()
@@ -1735,6 +1739,83 @@ class Scheduler:
                     logger.info("Company fitness snapshot: score=%.3f", score.score)
                 except Exception as exc:
                     logger.error("Company fitness snapshot failed: %s", exc)
+
+    # ── Stripe charge importer (Audit fix CRITICAL #4) ──────────────────────
+
+    async def _run_charge_importer_loop(self) -> None:
+        """Every 15 minutes, import paid Stripe charges into capital_ledger as
+        'charge_authorized' entries. This is the writer the company_fitness
+        revenue query needs — without it revenue is structurally £0.
+
+        Dedupes by stripe_object_id. Only GBP charges count (no FX conversion).
+        Skipped when STRIPE_SECRET_KEY is empty."""
+        from decimal import Decimal
+        IMPORTER_INTERVAL_S = 900  # 15 min
+
+        while True:
+            await asyncio.sleep(IMPORTER_INTERVAL_S)
+            if not (hasattr(self, "_db_pool") and self._db_pool is not None):
+                continue
+            if not settings.stripe_secret_key:
+                continue
+            try:
+                # Build a minimal _LivePayments JUST for list_charges. Don't
+                # wire ledger here (we ARE the ledger writer; recursive logging
+                # is not what we want).
+                from clawbot.skill_ctx import _LivePayments
+                from clawbot.capital_ledger import CapitalLedger
+
+                payments = _LivePayments(
+                    settings.stripe_secret_key,
+                    capital_ledger=None,
+                    live_mode_enabled=settings.stripe_live_mode_enabled,
+                    capital_daily_cap_gbp=Decimal("0"),
+                    capital_weekly_cap_gbp=Decimal("0"),
+                    capital_freeze=False,
+                )
+                charges = await payments.list_charges(limit=100)
+
+                ledger = CapitalLedger(self._db_pool)
+                imported = 0
+                for c in charges:
+                    # Filter: paid, positive amount, GBP only
+                    if not c.get("paid"):
+                        continue
+                    amount = c.get("amount", 0)
+                    if amount <= 0:
+                        continue
+                    if str(c.get("currency", "")).lower() != "gbp":
+                        continue
+                    charge_id = c.get("id")
+                    if not charge_id:
+                        continue
+                    # Dedupe — skip if we've already logged this charge
+                    async with self._db_pool.acquire() as conn:
+                        existing = await conn.fetchrow(
+                            "SELECT 1 FROM capital_ledger "
+                            "WHERE stripe_object_id = $1 LIMIT 1",
+                            charge_id,
+                        )
+                    if existing is not None:
+                        continue
+                    amount_gbp = Decimal(str(amount)) / Decimal("100")
+                    is_live = bool(c.get("livemode", False))
+                    await ledger.record(
+                        agent_id="charge_importer",
+                        action_type="charge_authorized",
+                        amount_gbp=amount_gbp,
+                        is_live_mode=is_live,
+                        stripe_object_id=charge_id,
+                        metadata={
+                            "description": str(c.get("description", ""))[:200],
+                            "customer": c.get("customer", ""),
+                        },
+                    )
+                    imported += 1
+                if imported > 0:
+                    logger.info("Charge importer: %d new charge(s) recorded", imported)
+            except Exception as exc:
+                logger.error("Charge importer loop failed: %s", exc)
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

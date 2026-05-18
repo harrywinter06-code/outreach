@@ -27,7 +27,7 @@ class Database:
         self._pool = await asyncpg.create_pool(
             self._url,
             min_size=2,
-            max_size=10,
+            max_size=20,  # raised from 10 — see Audit D #10
             init=_init,
         )
 
