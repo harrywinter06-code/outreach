@@ -112,6 +112,20 @@ class Settings(BaseSettings):
     # tier. Setting to 1 reverts to single-hypothesis behaviour.
     max_active_hypotheses: int = Field(default=3, ge=1, le=20)
 
+    # Swarm Phase Z1 — `business` is the unit of selection. Hard cap on
+    # concurrent active businesses. 8 is the realistic ceiling at free-tier
+    # LLM scale (NIM 240 RPM / 6 keys, bursty cycles); raise to 30+ on paid
+    # tier. Selection pressure compounds via template inheritance.
+    max_active_businesses: int = Field(default=8, ge=1, le=50)
+
+    # Seed budget per spawned business (£). Low default — the swarm should
+    # earn its way to bigger budgets via fitness, not be born rich.
+    business_seed_budget_gbp: float = Field(default=1.0, ge=0.0, le=100.0)
+
+    # Genome graduation threshold: a business's genome enters the template
+    # pool once it cumulatively earns this much. Templates seed future spawns.
+    business_template_graduation_gbp: float = Field(default=50.0, ge=1.0, le=10_000.0)
+
     # Capital integration — operator-gated graduation from Stripe test mode.
     # Until stripe_live_mode_enabled is True AND both caps > 0, _LivePayments
     # refuses any live-mode spend. Test-mode keys bypass these gates entirely.

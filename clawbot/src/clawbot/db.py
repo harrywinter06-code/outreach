@@ -275,3 +275,111 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+
+        # Swarm Phase Z1 — `business` as first-class unit of selection.
+        # A business is a running autonomous micro-business: niche + genome
+        # (price, channel mix, copy style, fulfilment template) + budget +
+        # measured revenue. The evolutionary meta-layer spawns/kills these.
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    business_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    niche TEXT NOT NULL,
+                    genome JSONB NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    parent_id TEXT,
+                    template_id TEXT,
+                    budget_remaining_gbp NUMERIC(10, 2) NOT NULL DEFAULT 0.0,
+                    revenue_total_gbp NUMERIC(10, 2) NOT NULL DEFAULT 0.0,
+                    fitness_score NUMERIC(4, 3) NOT NULL DEFAULT 0.0,
+                    spawned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_cycle_at TIMESTAMPTZ,
+                    killed_at TIMESTAMPTZ,
+                    kill_reason TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_businesses_status "
+                "ON businesses(status, fitness_score DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_businesses_parent "
+                "ON businesses(parent_id) WHERE parent_id IS NOT NULL"
+            )
+
+            # Business-scoped revenue events. Stripe webhook posts here with
+            # business_id resolved from the payment-link metadata.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS business_revenue (
+                    revenue_id BIGSERIAL PRIMARY KEY,
+                    business_id TEXT NOT NULL REFERENCES businesses(business_id),
+                    amount_gbp NUMERIC(10, 2) NOT NULL,
+                    source TEXT NOT NULL,
+                    external_id TEXT,
+                    is_refund BOOLEAN NOT NULL DEFAULT FALSE,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    UNIQUE(source, external_id)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_business_revenue_biz "
+                "ON business_revenue(business_id, recorded_at DESC)"
+            )
+
+            # Asset pool — domains, social handles, email lists, content
+            # clusters owned at the swarm level. Lent to businesses, reclaimed
+            # on death so failed bets leave positive externalities.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS business_assets (
+                    asset_id TEXT PRIMARY KEY,
+                    asset_type TEXT NOT NULL,
+                    identifier TEXT NOT NULL,
+                    owned_by_business_id TEXT REFERENCES businesses(business_id),
+                    available BOOLEAN NOT NULL DEFAULT TRUE,
+                    acquisition_cost_gbp NUMERIC(10, 2) NOT NULL DEFAULT 0.0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    released_at TIMESTAMPTZ,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_business_assets_pool "
+                "ON business_assets(asset_type, available) WHERE available = TRUE"
+            )
+
+            # Template pool — winning genomes graduate here and seed future
+            # spawns with mutation. A template is a frozen genome + the
+            # cumulative £ it earned (proof it works).
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS business_templates (
+                    template_id TEXT PRIMARY KEY,
+                    source_business_id TEXT NOT NULL UNIQUE REFERENCES businesses(business_id),
+                    genome JSONB NOT NULL,
+                    revenue_at_graduation_gbp NUMERIC(10, 2) NOT NULL,
+                    times_sampled INTEGER NOT NULL DEFAULT 0,
+                    times_produced_revenue INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            # Backfill: enforce UNIQUE on source_business_id even if the table
+            # was created before this constraint was added. Idempotent.
+            await conn.execute(
+                "ALTER TABLE business_templates "
+                "DROP CONSTRAINT IF EXISTS business_templates_source_business_id_key"
+            )
+            await conn.execute(
+                "ALTER TABLE business_templates "
+                "ADD CONSTRAINT business_templates_source_business_id_key "
+                "UNIQUE (source_business_id)"
+            )
+
+            # Red-team #3: distinguish real customer revenue from self-paid
+            # (agent-originated) revenue so fitness can't be gamed via the
+            # agent paying its own Stripe payment-link.
+            await conn.execute(
+                "ALTER TABLE business_revenue "
+                "ADD COLUMN IF NOT EXISTS is_self_paid BOOLEAN NOT NULL DEFAULT FALSE"
+            )

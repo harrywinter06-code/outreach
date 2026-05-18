@@ -122,6 +122,19 @@ async def main() -> None:
     if await maybe_seed_initial_hypothesis(hyp_store):
         logger.info("Seeded initial hypothesis")
 
+    # Swarm Phase Z1 — `business` as first-class unit of selection.
+    # The store is wired here so future loops (Z2 spawn/cull, Z3 capital
+    # allocator, Z4 template inheritance) have a single owner.
+    from clawbot.business_store import BusinessStore
+    business_store = BusinessStore(
+        db.pool, max_active=settings.max_active_businesses,
+    )
+    initial_active = await business_store.count_active()
+    logger.info(
+        "Swarm initialised: %d active businesses (cap=%d)",
+        initial_active, settings.max_active_businesses,
+    )
+
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)
