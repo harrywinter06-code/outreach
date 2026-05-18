@@ -36,6 +36,9 @@ EXPECTED_BUILTINS = {
     "social_listen_brand", "competitor_pricing_scrape", "github_trending",
     "arxiv_search", "arxiv_summarize", "reviews_scrape_g2",
     "glassdoor_scrape_company", "crunchbase_lookup",
+    "video_generate", "video_subtitle", "video_dub",
+    "podcast_generate", "logo_generate", "favicon_generate",
+    "image_remove_bg", "image_upscale", "screenshot_annotate",
 }
 
 

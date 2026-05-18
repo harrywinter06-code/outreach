@@ -138,6 +138,19 @@ class AccountsClient(Protocol):
     async def mark_zombie(self, *, service: str, email: str, reason: str) -> dict[str, Any]: ...
 
 
+class MediaClient(Protocol):
+    async def image_generate(self, *, prompt: str, transparent_bg: bool = False, size: str = "1024x1024") -> dict[str, Any]: ...
+    async def tts_generate(self, *, text: str, voice: str = "default", output_path: str) -> dict[str, Any]: ...
+    async def screenshot_url(self, *, url: str, output_path: str, viewport: str = "1280x720") -> dict[str, Any]: ...
+    async def stitch_audio(self, *, audio_paths: list[str], output_path: str) -> dict[str, Any]: ...
+    async def annotate_image(self, *, input_path: str, output_path: str, annotations: list[dict[str, Any]]) -> dict[str, Any]: ...
+    async def video_generate(self, *, prompt: str, duration_s: float = 4.0) -> dict[str, Any]: ...
+    async def video_subtitle(self, *, video_path: str) -> dict[str, Any]: ...
+    async def video_dub(self, *, video_path: str, target_lang: str) -> dict[str, Any]: ...
+    async def image_remove_bg(self, *, image_url: str, output_path: str) -> dict[str, Any]: ...
+    async def image_upscale(self, *, image_url: str, output_path: str, scale: int = 2) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -156,6 +169,7 @@ class SkillCtx:
     email: EmailClient
     search: SearchClient
     accounts: AccountsClient
+    media: MediaClient
     caller_id: str
     budget_usd: float
 
@@ -313,13 +327,45 @@ class _NoopAccounts:
         return {"service": service, "email": email, "status": "zombie", "reason": reason}
 
 
+class _NoopMedia:
+    async def image_generate(self, *, prompt: str, transparent_bg: bool = False, size: str = "1024x1024") -> dict[str, Any]:
+        return {"url": "https://noop/image.png", "prompt": prompt}
+
+    async def tts_generate(self, *, text: str, voice: str = "default", output_path: str) -> dict[str, Any]:
+        return {"path": output_path, "duration_s": 0.0}
+
+    async def screenshot_url(self, *, url: str, output_path: str, viewport: str = "1280x720") -> dict[str, Any]:
+        return {"path": output_path, "url": url}
+
+    async def stitch_audio(self, *, audio_paths: list[str], output_path: str) -> dict[str, Any]:
+        return {"path": output_path, "track_count": len(audio_paths)}
+
+    async def annotate_image(self, *, input_path: str, output_path: str, annotations: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"path": output_path, "annotation_count": len(annotations)}
+
+    async def video_generate(self, *, prompt: str, duration_s: float = 4.0) -> dict[str, Any]:
+        return {"url": "https://noop/video.mp4", "prompt": prompt, "duration_s": duration_s}
+
+    async def video_subtitle(self, *, video_path: str) -> dict[str, Any]:
+        return {"srt": "", "video_path": video_path}
+
+    async def video_dub(self, *, video_path: str, target_lang: str) -> dict[str, Any]:
+        return {"url": "https://noop/dubbed.mp4", "target_lang": target_lang}
+
+    async def image_remove_bg(self, *, image_url: str, output_path: str) -> dict[str, Any]:
+        return {"path": output_path, "source_url": image_url}
+
+    async def image_upscale(self, *, image_url: str, output_path: str, scale: int = 2) -> dict[str, Any]:
+        return {"path": output_path, "scale": scale}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
         bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
         social=_NoopSocial(), email=_NoopEmail(), search=_NoopSearch(),
-        accounts=_NoopAccounts(),
+        accounts=_NoopAccounts(), media=_NoopMedia(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -964,6 +1010,200 @@ class _LiveAccounts:
             return None
 
 
+class _LiveMedia:
+    """Media generation surface for skills.
+
+    Each backend is independently optional via its env key; methods with no
+    key configured return a no-op-shaped dict so skills compose without
+    crashing. Provider request shapes here reflect best knowledge as of
+    Jan 2026 — verify the exact endpoint and JSON contract for any provider
+    before relying on it in production. Pillow is imported lazily inside
+    annotate_image so the rest of the surface works even when Pillow is
+    not installed.
+    """
+
+    def __init__(
+        self,
+        *,
+        stability_api_key: str = "",
+        runway_api_key: str = "",
+        elevenlabs_api_key: str = "",
+        openai_api_key: str = "",
+        removebg_api_key: str = "",
+        screenshot_api_key: str = "",
+    ) -> None:
+        self._stability_key = stability_api_key
+        self._runway_key = runway_api_key
+        self._elevenlabs_key = elevenlabs_api_key
+        self._openai_key = openai_api_key
+        self._removebg_key = removebg_api_key
+        self._screenshot_key = screenshot_api_key
+        self._timeout = 60.0
+
+    async def image_generate(self, *, prompt: str, transparent_bg: bool = False, size: str = "1024x1024") -> dict[str, Any]:
+        if not self._stability_key:
+            return {"url": "", "prompt": prompt}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://api.stability.ai/v2beta/stable-image/generate/core",
+                headers={"Authorization": f"Bearer {self._stability_key}", "Accept": "application/json"},
+                files={"prompt": (None, prompt),
+                       "output_format": (None, "png"),
+                       "size": (None, size)},
+            )
+            r.raise_for_status()
+        payload = r.json()
+        return {"url": payload.get("image", ""), "prompt": prompt, "transparent_bg": transparent_bg}
+
+    async def tts_generate(self, *, text: str, voice: str = "default", output_path: str) -> dict[str, Any]:
+        if not self._elevenlabs_key:
+            return {"path": output_path, "duration_s": 0.0}
+        voice_id = voice if voice != "default" else "21m00Tcm4TlvDq8ikWAM"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={"xi-api-key": self._elevenlabs_key, "accept": "audio/mpeg"},
+                json={"text": text, "model_id": "eleven_multilingual_v2"},
+            )
+            r.raise_for_status()
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(r.content)
+        return {"path": output_path, "duration_s": float(len(r.content)) / 16000.0}
+
+    async def screenshot_url(self, *, url: str, output_path: str, viewport: str = "1280x720") -> dict[str, Any]:
+        if not self._screenshot_key:
+            return {"path": output_path, "url": url}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.get(
+                "https://api.screenshotone.com/take",
+                params={"access_key": self._screenshot_key, "url": url,
+                        "viewport_width": viewport.split("x")[0],
+                        "viewport_height": viewport.split("x")[1],
+                        "format": "png"},
+            )
+            r.raise_for_status()
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(r.content)
+        return {"path": output_path, "url": url}
+
+    async def stitch_audio(self, *, audio_paths: list[str], output_path: str) -> dict[str, Any]:
+        if not audio_paths:
+            return {"path": output_path, "track_count": 0}
+        import subprocess as _sp  # noqa: S404 — ffmpeg shellout is intentional, args are file paths only
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        list_file = Path(output_path).with_suffix(".concat.txt")
+        list_file.write_text(
+            "\n".join(f"file '{Path(p).as_posix()}'" for p in audio_paths),
+            encoding="utf-8",
+        )
+        proc = await asyncio.to_thread(
+            _sp.run,
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+             "-c", "copy", output_path],
+            capture_output=True, text=True, timeout=300,
+        )
+        list_file.unlink(missing_ok=True)
+        return {"path": output_path, "track_count": len(audio_paths),
+                "ffmpeg_rc": proc.returncode}
+
+    async def annotate_image(self, *, input_path: str, output_path: str, annotations: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            from PIL import Image, ImageDraw  # type: ignore
+        except ImportError:
+            return {"path": input_path, "annotation_count": 0, "error": "Pillow not installed"}
+        img = Image.open(input_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        for ann in annotations:
+            kind = ann.get("type", "box")
+            colour = ann.get("colour", "red")
+            if kind == "box" and "xyxy" in ann:
+                x0, y0, x1, y1 = ann["xyxy"]
+                draw.rectangle([x0, y0, x1, y1], outline=colour, width=int(ann.get("width", 3)))
+            elif kind == "arrow" and "xyxy" in ann:
+                x0, y0, x1, y1 = ann["xyxy"]
+                draw.line([x0, y0, x1, y1], fill=colour, width=int(ann.get("width", 3)))
+            elif kind == "text" and "xy" in ann and "text" in ann:
+                draw.text(ann["xy"], ann["text"], fill=colour)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        img.save(output_path)
+        return {"path": output_path, "annotation_count": len(annotations)}
+
+    async def video_generate(self, *, prompt: str, duration_s: float = 4.0) -> dict[str, Any]:
+        if not self._runway_key:
+            return {"url": "", "prompt": prompt, "duration_s": duration_s}
+        async with httpx.AsyncClient(timeout=self._timeout * 3) as client:
+            r = await client.post(
+                "https://api.runwayml.com/v1/text_to_video",
+                headers={"Authorization": f"Bearer {self._runway_key}",
+                         "X-Runway-Version": "2024-11-06"},
+                json={"prompt": prompt, "duration": duration_s, "ratio": "1280:720"},
+            )
+            r.raise_for_status()
+        payload = r.json()
+        return {"url": payload.get("output", {}).get("url", ""),
+                "prompt": prompt, "duration_s": duration_s}
+
+    async def video_subtitle(self, *, video_path: str) -> dict[str, Any]:
+        if not self._openai_key:
+            return {"srt": "", "video_path": video_path}
+        async with httpx.AsyncClient(timeout=self._timeout * 3) as client:
+            with Path(video_path).open("rb") as fh:
+                r = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {self._openai_key}"},
+                    data={"model": "whisper-1", "response_format": "srt"},
+                    files={"file": (Path(video_path).name, fh, "video/mp4")},
+                )
+                r.raise_for_status()
+        return {"srt": r.text, "video_path": video_path}
+
+    async def video_dub(self, *, video_path: str, target_lang: str) -> dict[str, Any]:
+        if not self._elevenlabs_key:
+            return {"url": "", "target_lang": target_lang}
+        async with httpx.AsyncClient(timeout=self._timeout * 3) as client:
+            with Path(video_path).open("rb") as fh:
+                r = await client.post(
+                    "https://api.elevenlabs.io/v1/dubbing",
+                    headers={"xi-api-key": self._elevenlabs_key},
+                    data={"target_lang": target_lang, "source_lang": "auto"},
+                    files={"file": (Path(video_path).name, fh, "video/mp4")},
+                )
+                r.raise_for_status()
+        payload = r.json()
+        return {"url": payload.get("dubbing_id", ""), "target_lang": target_lang}
+
+    async def image_remove_bg(self, *, image_url: str, output_path: str) -> dict[str, Any]:
+        if not self._removebg_key:
+            return {"path": output_path, "source_url": image_url}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                "https://api.remove.bg/v1.0/removebg",
+                headers={"X-Api-Key": self._removebg_key},
+                data={"image_url": image_url, "size": "auto"},
+            )
+            r.raise_for_status()
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(r.content)
+        return {"path": output_path, "source_url": image_url}
+
+    async def image_upscale(self, *, image_url: str, output_path: str, scale: int = 2) -> dict[str, Any]:
+        if not self._stability_key:
+            return {"path": output_path, "scale": scale}
+        async with httpx.AsyncClient(timeout=self._timeout * 2) as client:
+            img = await client.get(image_url)
+            img.raise_for_status()
+            r = await client.post(
+                "https://api.stability.ai/v2beta/stable-image/upscale/fast",
+                headers={"Authorization": f"Bearer {self._stability_key}",
+                         "Accept": "image/*"},
+                files={"image": ("input.png", img.content, "image/png")},
+            )
+            r.raise_for_status()
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(r.content)
+        return {"path": output_path, "scale": scale}
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -992,6 +1232,12 @@ def make_live_ctx(
     imap_user: str = "",
     imap_password: str = "",
     email_domain: str = "",
+    stability_api_key: str = "",
+    runway_api_key: str = "",
+    elevenlabs_api_key: str = "",
+    openai_api_key: str = "",
+    removebg_api_key: str = "",
+    screenshot_api_key: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -1045,6 +1291,17 @@ def make_live_ctx(
     else:
         accounts = _NoopAccounts()
 
+    media: MediaClient = (
+        _LiveMedia(
+            stability_api_key=stability_api_key, runway_api_key=runway_api_key,
+            elevenlabs_api_key=elevenlabs_api_key, openai_api_key=openai_api_key,
+            removebg_api_key=removebg_api_key, screenshot_api_key=screenshot_api_key,
+        )
+        if (stability_api_key or runway_api_key or elevenlabs_api_key
+            or openai_api_key or removebg_api_key or screenshot_api_key)
+        else _NoopMedia()
+    )
+
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -1062,6 +1319,7 @@ def make_live_ctx(
         email=email,
         search=search,
         accounts=accounts,
+        media=media,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )
