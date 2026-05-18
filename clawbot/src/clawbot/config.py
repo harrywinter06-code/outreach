@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     firecrawl_api_key: str = ""
 
+    # Z3 — Resend transactional email for fulfilment delivery. Without it,
+    # the webhook persists unsent reports to business metadata so the
+    # operator can replay them manually. Set both to send real email:
+    #   RESEND_API_KEY=re_...
+    #   EMAIL_DOMAIN=veriflowlabs.co.uk    (verified in Resend dashboard)
+    resend_api_key: str = ""
+
     # Account-management infrastructure — all optional.
     # Without these, _LiveAccounts falls back to _NoopAccounts so existing
     # behaviour is unchanged. Operator setup:
