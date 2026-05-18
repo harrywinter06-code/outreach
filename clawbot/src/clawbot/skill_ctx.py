@@ -110,6 +110,7 @@ class PaymentsClient(Protocol):
     async def issue_card(self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str) -> dict[str, Any]: ...
     async def freeze_card(self, *, card_id: str) -> dict[str, Any]: ...
     async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    async def respond_to_dispute(self, *, dispute_id: str, evidence: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class SocialClient(Protocol):
@@ -272,6 +273,9 @@ class _NoopPayments:
 
     async def list_authorizations(self, *, card_id: str, limit: int = 20) -> list[dict[str, Any]]:
         return []
+
+    async def respond_to_dispute(self, *, dispute_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+        return {"id": dispute_id, "status": "noop", "evidence_submitted": True}
 
 
 class _NoopSocial:
@@ -625,6 +629,14 @@ class _LivePayments:
             stripe.issuing.Authorization.list, card=card_id, limit=limit,  # type: ignore[union-attr]
         )
         return [a.to_dict() for a in auths.data]
+
+    async def respond_to_dispute(
+        self, *, dispute_id: str, evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        dispute = await asyncio.to_thread(
+            stripe.Dispute.modify, dispute_id, evidence=evidence,  # type: ignore[union-attr]
+        )
+        return dispute.to_dict()
 
 
 class _LiveSocial:
