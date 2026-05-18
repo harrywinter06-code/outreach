@@ -136,6 +136,9 @@ class DirectiveRouter:
             "publish_product": self._handle_publish_product,
             "message": self._handle_message_action,
             "web_research": self._handle_web_research,
+            "plan_init": self._handle_plan_init,
+            "plan_advance": self._handle_plan_advance,
+            "plan_pivot": self._handle_plan_pivot,
             # web_search and browser_task handlers from 100-hands plan, if present:
         }
         if hasattr(self, "_handle_web_search"):
@@ -334,3 +337,39 @@ class DirectiveRouter:
                 "chain_id": chain_id,
             })
             logger.warning("Skill failed: %s for %s — %s", skill_name, from_agent, record.error)
+
+    async def _handle_plan_init(self, data: dict, chain_id: str, from_agent: str) -> None:
+        from clawbot.plan_store import PlanStore
+        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        hypothesis = str(data.get("hypothesis", ""))[:400]
+        milestones = data.get("milestones", [])
+        if not isinstance(milestones, list) or not milestones:
+            raise ValueError("plan_init requires non-empty milestones list")
+        await store.create_plan(
+            agent_id=from_agent, hypothesis=hypothesis, milestones=milestones,
+        )
+        logger.info("Plan initialised for %s with %d milestones", from_agent, len(milestones))
+
+    async def _handle_plan_advance(self, data: dict, chain_id: str, from_agent: str) -> None:
+        from clawbot.plan_store import PlanStore
+        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        advanced = await store.advance_milestone(agent_id=from_agent)
+        logger.info(
+            "Plan advance for %s: %s",
+            from_agent,
+            "next milestone active" if advanced else "plan complete",
+        )
+
+    async def _handle_plan_pivot(self, data: dict, chain_id: str, from_agent: str) -> None:
+        from clawbot.plan_store import PlanStore
+        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        reason = str(data.get("reason", ""))[:400]
+        new_hypothesis = str(data.get("new_hypothesis", ""))[:400]
+        new_milestones = data.get("new_milestones", [])
+        if not new_milestones:
+            raise ValueError("plan_pivot requires new_milestones")
+        await store.pivot(
+            agent_id=from_agent, reason=reason,
+            new_hypothesis=new_hypothesis, new_milestones=new_milestones,
+        )
+        logger.info("Plan pivot for %s: %s", from_agent, reason[:80])

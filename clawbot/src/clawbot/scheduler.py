@@ -48,6 +48,8 @@ if TYPE_CHECKING:
     from clawbot.homeostasis import Homeostasis
     from clawbot.task_store import TaskStore
 
+from clawbot.plan_store import PlanStore
+
 logger = logging.getLogger(__name__)
 
 AGENTS_DIR = Path(__file__).parent.parent.parent / "agents"
@@ -385,6 +387,36 @@ class Scheduler:
         except Exception as exc:
             logger.warning("Skill catalog render failed (continuing without it): %s", exc)
 
+        # Plan state — load current milestone for the CEO. Plans persist across
+        # cycles so the CEO doesn't re-decide its strategy every wake.
+        plan_block = ""
+        try:
+            plan_store = PlanStore(self._db_pool) if hasattr(self, "_db_pool") and self._db_pool is not None else None
+            current_milestone = None
+            if plan_store is not None:
+                current_milestone = await plan_store.get_current_milestone(agent_id="ceo")
+            if current_milestone is None:
+                plan_block = (
+                    "\n\nNo active plan. Output "
+                    '{"action":"plan_init", "hypothesis":"...", '
+                    '"milestones":[{"hypothesis":"...","success_criteria":["..."]}]} '
+                    "to commit to one before any other substantive action.\n"
+                )
+            else:
+                plan_block = (
+                    f"\n\nCurrent milestone (#{current_milestone.milestone_idx}): "
+                    f"{current_milestone.hypothesis}\n"
+                    f"Success criteria: {current_milestone.success_criteria}\n"
+                    f"Evidence collected so far: {current_milestone.evidence}\n"
+                    "When the criteria are met, output {\"action\":\"plan_advance\"}. "
+                    "When the hypothesis is invalidated, output "
+                    '{"action":"plan_pivot", "reason":"...", "new_hypothesis":"...", '
+                    '"new_milestones":[...]}. '
+                    "Otherwise pick any action that gathers evidence toward the criteria.\n"
+                )
+        except Exception as exc:
+            logger.warning("plan load for ceo failed (continuing without): %s", exc)
+
         messages = [
             {"role": "system", "content": soul},
             {
@@ -393,8 +425,12 @@ class Scheduler:
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}"
                     f"{board_directive}{recent_decisions}"
                     f"{catalog_block}"
+                    f"{plan_block}"
                     "\nWhat is your next action? Output JSON with one of these action schemas:\n"
-                    '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
+                    '{"action": "plan_init", "hypothesis": "...", "milestones": [...]} '
+                    '| {"action": "plan_advance"} '
+                    '| {"action": "plan_pivot", "reason": "...", "new_hypothesis": "...", "new_milestones": [...]} '
+                    '| {"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
                     '| {"action": "fire", "agent_id": "..."} '
                     '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
                     '| {"action": "publish_product", "title": "...", "description": "..."} '
@@ -565,6 +601,36 @@ class Scheduler:
         except Exception as exc:
             logger.warning("Skill catalog render failed for %s (continuing): %s", agent_id, exc)
 
+        # Plan state — load current milestone for this agent. Plans persist across
+        # cycles so the agent doesn't re-decide its strategy every wake.
+        plan_block = ""
+        try:
+            plan_store = PlanStore(self._db_pool) if hasattr(self, "_db_pool") and self._db_pool is not None else None
+            current_milestone = None
+            if plan_store is not None:
+                current_milestone = await plan_store.get_current_milestone(agent_id=agent_id)
+            if current_milestone is None:
+                plan_block = (
+                    "\n\nNo active plan. Output "
+                    '{"action":"plan_init", "hypothesis":"...", '
+                    '"milestones":[{"hypothesis":"...","success_criteria":["..."]}]} '
+                    "to commit to one before any other substantive action.\n"
+                )
+            else:
+                plan_block = (
+                    f"\n\nCurrent milestone (#{current_milestone.milestone_idx}): "
+                    f"{current_milestone.hypothesis}\n"
+                    f"Success criteria: {current_milestone.success_criteria}\n"
+                    f"Evidence collected so far: {current_milestone.evidence}\n"
+                    "When the criteria are met, output {\"action\":\"plan_advance\"}. "
+                    "When the hypothesis is invalidated, output "
+                    '{"action":"plan_pivot", "reason":"...", "new_hypothesis":"...", '
+                    '"new_milestones":[...]}. '
+                    "Otherwise pick any action that gathers evidence toward the criteria.\n"
+                )
+        except Exception as exc:
+            logger.warning("plan load for %s failed (continuing without): %s", agent_id, exc)
+
         messages = [
             {"role": "system", "content": soul},
             {
@@ -572,8 +638,12 @@ class Scheduler:
                 "content": (
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}"
                     f"{catalog_block}"
+                    f"{plan_block}"
                     "\nWhat is your next action? Output JSON with one of these action schemas:\n"
-                    '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
+                    '{"action": "plan_init", "hypothesis": "...", "milestones": [...]} '
+                    '| {"action": "plan_advance"} '
+                    '| {"action": "plan_pivot", "reason": "...", "new_hypothesis": "...", "new_milestones": [...]} '
+                    '| {"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
                     '| {"action": "fire", "agent_id": "..."} '
                     '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
                     '| {"action": "publish_product", "title": "...", "description": "..."} '
