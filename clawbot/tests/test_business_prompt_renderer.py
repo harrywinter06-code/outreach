@@ -29,6 +29,15 @@ def _make_business(*, business_id="b1", name="bt", niche="x", revenue=0.0,
 @dataclass
 class _StubSkill:
     name: str
+    description: str = ""
+    params: dict | None = None
+    roles: list | None = None
+
+    def __post_init__(self):
+        if self.params is None:
+            object.__setattr__(self, "params", {})
+        if self.roles is None:
+            object.__setattr__(self, "roles", [])
 
 
 def test_prompt_contains_identity_state_recent_skills_mandate():
@@ -40,8 +49,8 @@ def test_prompt_contains_identity_state_recent_skills_mandate():
     )
     assert "=== IDENTITY ===" in out
     assert "=== STATE ===" in out
-    assert "=== RECENT ACTIONS ===" in out
-    assert "=== AVAILABLE SKILLS ===" in out
+    assert "=== RECENT ATTEMPTS ===" in out
+    assert "=== AVAILABLE SKILLS" in out
     assert "=== MANDATE ===" in out
 
 
@@ -116,14 +125,15 @@ def test_filter_skills_keeps_channel_skills_and_core_primitives():
         _StubSkill(name="experiment_record_observation"),
     ]
     out = filter_skills_for_business(catalog, genome)
+    names = [e.name for e in out]
     # MUST contain channel + core
     for required in ("dev_to_publish", "bluesky_post", "llm_complete",
                      "http_fetch", "write_landing_page_copy", "sql_query"):
-        assert required in out, f"{required} missing from filtered list: {out}"
+        assert required in names, f"{required} missing from filtered list: {names}"
     # MUST exclude wrong-channel + non-core skills (fallback didn't fire — ≥10 matches)
-    assert "x_post" not in out
-    assert "medium_publish" not in out
-    assert "stripe_create_product" not in out
+    assert "x_post" not in names
+    assert "medium_publish" not in names
+    assert "stripe_create_product" not in names
 
 
 def test_filter_skills_falls_back_to_broader_catalog_when_too_few_match():
@@ -137,6 +147,63 @@ def test_filter_skills_falls_back_to_broader_catalog_when_too_few_match():
         _StubSkill(name="another_one"),
     ]
     out = filter_skills_for_business(catalog, genome)
+    names = [e.name for e in out]
     # Only 1 channel + 0 core matches; fallback adds the rest up to 30
     assert len(out) == 3
-    assert "some_obscure_skill" in out
+    assert "some_obscure_skill" in names
+
+
+def test_filter_skills_returns_full_entries_not_just_names():
+    """Z2.5 fix: renderer needs full entry objects so it can read param
+    signatures. Returning just names left the LLM guessing params."""
+    from clawbot.business_prompt_renderer import filter_skills_for_business
+    catalog = [
+        _StubSkill(name="dev_to_publish", description="post to dev.to",
+                   params={"title": "str", "body_markdown": "str"}),
+    ]
+    out = filter_skills_for_business(catalog, {"channels": ["dev_to"]})
+    assert out  # must be non-empty
+    e = out[0]
+    # Entry, not bare string
+    assert hasattr(e, "name")
+    assert e.params == {"title": "str", "body_markdown": "str"}
+
+
+def test_prompt_renders_skill_signatures_with_param_types():
+    """The whole point of Z2.5 polish: LLM sees `name(p1: type, p2: type)`
+    so it can construct valid action JSON instead of guessing."""
+    from clawbot.business_prompt_renderer import render_business_prompt
+    biz = _make_business()
+    catalog = [
+        _StubSkill(
+            name="dev_to_publish",
+            description="post an article to dev.to",
+            params={"title": "str", "body_markdown": "str"},
+        ),
+    ]
+    out = render_business_prompt(
+        business=biz, recent_actions=[], recent_skill_results=[],
+        skill_catalog=catalog,
+    )
+    assert "dev_to_publish(title: str, body_markdown: str)" in out
+    assert "post an article to dev.to" in out
+    assert "include EVERY listed param" in out  # mandate hardening
+
+
+def test_prompt_renders_recent_failures_with_errors():
+    """LLM must SEE its prior mistake to correct it. Recent attempts block
+    shows skill_name + OK/FAIL + the error string."""
+    from clawbot.business_prompt_renderer import render_business_prompt
+    biz = _make_business()
+    recent = [
+        {"skill_name": "mastodon_post", "ok": False,
+         "error": "missing required param: status"},
+        {"skill_name": "dev_to_publish", "ok": True, "error": ""},
+    ]
+    out = render_business_prompt(
+        business=biz, recent_actions=recent, recent_skill_results=[],
+        skill_catalog=[],
+    )
+    assert "FAIL" in out and "mastodon_post" in out
+    assert "missing required param: status" in out
+    assert "OK" in out and "dev_to_publish" in out

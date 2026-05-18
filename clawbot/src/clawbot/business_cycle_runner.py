@@ -69,6 +69,47 @@ def action_produces_artifact(action_name: str) -> bool:
     return action_name in ARTIFACT_ACTIONS
 
 
+# Framing fields the directive_router strips before passing to skill.run().
+# Pre-validation must apply the same stripping so we don't false-positive
+# on missing-param when the action data has framing keys mixed in.
+_FRAMING_KEYS = frozenset((
+    "action", "directive", "priority", "next_wakeup_s",
+    "escalate", "dashboard_widget", "business_id",
+))
+
+
+def _missing_required_params(action: str, data: dict) -> list[str]:
+    """Return the list of required params missing from `data` for the
+    given action. Empty list = action is valid. Empty list when skill
+    isn't registered (let dispatch + downstream handler decide)."""
+    try:
+        from clawbot.skill_registry import REGISTRY
+        import inspect
+    except Exception:
+        return []
+    if REGISTRY is None:
+        return []
+    # Access underlying _skills dict to get the run() signature.
+    skill = REGISTRY._skills.get(action) if hasattr(REGISTRY, "_skills") else None
+    if skill is None:
+        return []
+    try:
+        sig = inspect.signature(skill.run)
+    except Exception:
+        return []
+    required = [
+        pname for pname, param in sig.parameters.items()
+        if pname != "ctx"
+        and param.default is inspect.Parameter.empty
+        and param.kind not in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+    ]
+    supplied = {k for k in data.keys() if k not in _FRAMING_KEYS}
+    return [p for p in required if p not in supplied]
+
+
 class BusinessCycleRunner:
     """Round-robin cycle runner over the active business population."""
 
@@ -118,14 +159,25 @@ class BusinessCycleRunner:
         """
         self.cycle_count += 1
         try:
+            # Z2.5b polish: pull last 5 attempts from skill_calls so the LLM
+            # sees its own mistakes and can correct in this cycle. Empty
+            # for never-cycled businesses or stores without the method.
+            recent_actions: list[dict] = []
+            try:
+                recent_actions = await self._store.recent_skill_calls(
+                    business_id=business.business_id, limit=5,
+                )
+            except Exception as exc:
+                logger.debug("recent_skill_calls unavailable for %s: %s", business.business_id, exc)
+
             prompt = render_business_prompt(
                 business=business,
-                recent_actions=[],  # Z2.5b: enrich from skill_calls history if needed
+                recent_actions=recent_actions,
                 recent_skill_results=[],
                 skill_catalog=self._load_catalog(),
             )
             messages = [
-                {"role": "system", "content": "You are an autonomous business operator. Reply ONLY with one JSON object."},
+                {"role": "system", "content": "You are an autonomous business operator. Reply ONLY with one JSON object. Use ONLY the listed skills and include EVERY required param."},
                 {"role": "user", "content": prompt},
             ]
             raw = await self._pool.complete(messages, tier="worker", temperature=0.6, max_tokens=800)
@@ -143,6 +195,25 @@ class BusinessCycleRunner:
         action = str(data.get("action", "")).strip().lower()
         if not action or action == "wait":
             logger.info("Business %s: action=wait, stalling", business.business_id)
+            await self._bump_stall(business)
+            return False
+
+        # Z2.5b polish: pre-validate against skill META so we don't dispatch
+        # an action we already know will fail param validation. Counts as
+        # stall (the LLM gets the failure in next cycle's recent_actions
+        # and can correct). If skill registry is unavailable, fall through.
+        missing = _missing_required_params(action, data)
+        if missing:
+            logger.info(
+                "Business %s: action=%s rejected by pre-validate (missing %s), stalling",
+                business.business_id, action, missing,
+            )
+            # Record a synthetic skill_calls row so the LLM sees this
+            # specific failure on its next cycle.
+            await self._record_synthetic_failure(
+                business_id=business.business_id, action=action,
+                reason=f"missing required param: {missing[0]}",
+            )
             await self._bump_stall(business)
             return False
 
@@ -176,6 +247,28 @@ class BusinessCycleRunner:
                 business.business_id, action,
             )
         return is_artifact
+
+    async def _record_synthetic_failure(
+        self, *, business_id: str, action: str, reason: str,
+    ) -> None:
+        """Insert a synthetic skill_calls row when pre-validation rejects an
+        action before dispatch. Without this, the LLM's recent_actions list
+        wouldn't show the rejection and the same mistake repeats next cycle.
+
+        Swallows errors — failure to log a failure must not break the loop."""
+        try:
+            from clawbot.skill_registry import REGISTRY
+            if REGISTRY is None or getattr(REGISTRY, "_stats_db", None) is None:
+                return
+            async with REGISTRY._stats_db.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO skill_calls "
+                    "(skill_name, caller_id, ok, cost_usd, latency_ms, error, business_id) "
+                    "VALUES ($1, $2, FALSE, 0.0, 0, $3, $4)",
+                    action, "business", reason, business_id,
+                )
+        except Exception as exc:
+            logger.debug("synthetic failure log skipped: %s", exc)
 
     async def _mark_artifact(self, business: Business) -> None:
         """Reset stall counter and stamp last_cycle_at via update_fitness."""

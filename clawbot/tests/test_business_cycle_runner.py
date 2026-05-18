@@ -64,6 +64,7 @@ async def test_cycle_with_artifact_action_returns_true_and_resets_stall():
     store = MagicMock()
     store.update_metadata = AsyncMock()
     store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
     pool = MagicMock()
     pool.complete = AsyncMock(return_value=json.dumps({
         "action": "dev_to_publish", "title": "X", "body_markdown": "...",
@@ -101,6 +102,7 @@ async def test_cycle_with_wait_action_bumps_stall():
     store = MagicMock()
     store.update_metadata = AsyncMock()
     store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
     pool = MagicMock()
     pool.complete = AsyncMock(return_value='{"action": "wait"}')
     bus = MagicMock()
@@ -123,6 +125,7 @@ async def test_cycle_with_llm_error_stalls_gracefully():
     store = MagicMock()
     store.update_metadata = AsyncMock()
     store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
     pool = MagicMock()
     pool.complete = AsyncMock(side_effect=RuntimeError("rate limit"))
     bus = MagicMock()
@@ -142,6 +145,7 @@ async def test_cycle_with_garbage_llm_response_stalls():
     store = MagicMock()
     store.update_metadata = AsyncMock()
     store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
     pool = MagicMock()
     pool.complete = AsyncMock(return_value="here is some prose with no JSON at all")
     bus = MagicMock()
@@ -154,6 +158,155 @@ async def test_cycle_with_garbage_llm_response_stalls():
     assert produced is False
 
 
+def test_missing_required_params_returns_missing_names_when_registry_populated(monkeypatch):
+    """Pre-validation must consult the live skill registry and return the
+    list of required params absent from the action data dict."""
+    import inspect
+    from clawbot.business_cycle_runner import _missing_required_params
+    from clawbot import skill_registry as sr
+
+    class _FakeMeta:
+        timeout_s = 10
+        returns = {"url": "str"}
+        cost_estimate_usd = 0.0
+
+    class _FakeSkill:
+        meta = _FakeMeta()
+        async def run(self, ctx, title: str, body_markdown: str) -> dict:
+            return {}
+
+    class _FakeRegistry:
+        def __init__(self):
+            self._skills = {"dev_to_publish": _FakeSkill()}
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+    # Missing body_markdown
+    missing = _missing_required_params(
+        "dev_to_publish",
+        {"action": "dev_to_publish", "title": "x", "business_id": "biz_z"},
+    )
+    assert missing == ["body_markdown"]
+
+
+def test_missing_required_params_returns_empty_when_all_present(monkeypatch):
+    import inspect
+    from clawbot.business_cycle_runner import _missing_required_params
+    from clawbot import skill_registry as sr
+
+    class _Meta:
+        timeout_s = 10
+        returns = {"url": "str"}
+        cost_estimate_usd = 0.0
+
+    class _FakeSkill:
+        meta = _Meta()
+        async def run(self, ctx, title: str, body_markdown: str) -> dict:
+            return {}
+
+    class _FakeRegistry:
+        def __init__(self):
+            self._skills = {"dev_to_publish": _FakeSkill()}
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+    missing = _missing_required_params(
+        "dev_to_publish",
+        {"action": "dev_to_publish", "title": "x", "body_markdown": "y"},
+    )
+    assert missing == []
+
+
+def test_missing_required_params_returns_empty_when_skill_unknown(monkeypatch):
+    """Unknown skill → empty list. We let dispatch happen and the downstream
+    handler decides (registry will fail with 'unknown skill' which we now record)."""
+    from clawbot.business_cycle_runner import _missing_required_params
+    from clawbot import skill_registry as sr
+
+    class _FakeRegistry:
+        _skills: dict = {}
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+    assert _missing_required_params("nope_skill", {"action": "nope_skill"}) == []
+
+
+@pytest.mark.asyncio
+async def test_cycle_pre_validates_action_and_stalls_on_missing_param(monkeypatch):
+    """End-to-end: LLM returns malformed action → pre-validation catches it
+    → no bus.publish → stall counter increments."""
+    from clawbot.business_cycle_runner import BusinessCycleRunner
+    from clawbot import skill_registry as sr
+
+    class _Meta:
+        timeout_s = 10
+        returns = {"url": "str"}
+        cost_estimate_usd = 0.0
+
+    class _FakeSkill:
+        meta = _Meta()
+        async def run(self, ctx, title: str, body_markdown: str) -> dict:
+            return {}
+
+    class _FakeRegistry:
+        def __init__(self):
+            self._skills = {"dev_to_publish": _FakeSkill()}
+            self._stats_db = None  # no DB for synthetic-failure path
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+
+    store = MagicMock()
+    store.update_metadata = AsyncMock()
+    store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
+    pool = MagicMock()
+    pool.complete = AsyncMock(return_value=json.dumps({
+        "action": "dev_to_publish", "title": "X",  # missing body_markdown
+    }))
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    runner = BusinessCycleRunner(
+        store=store, llm_pool=pool, bus=bus, load_skill_catalog=lambda: [],
+    )
+    biz = _make_business()
+    produced = await runner.run_one_cycle(biz)
+    assert produced is False
+    bus.publish.assert_not_called(), "must NOT dispatch a doomed action"
+    update_call = store.update_metadata.call_args
+    assert update_call.kwargs["updates"]["artifact_stall_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cycle_loads_recent_skill_calls_into_prompt(monkeypatch):
+    """The LLM must see its own prior failures. run_one_cycle calls
+    store.recent_skill_calls and passes the result to the renderer."""
+    from clawbot.business_cycle_runner import BusinessCycleRunner
+    captured_recent = []
+
+    def fake_render(*, business, recent_actions, recent_skill_results, skill_catalog):
+        captured_recent.extend(recent_actions)
+        return "rendered prompt"
+
+    monkeypatch.setattr(
+        "clawbot.business_cycle_runner.render_business_prompt", fake_render,
+    )
+    store = MagicMock()
+    store.update_metadata = AsyncMock()
+    store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[
+        {"skill_name": "mastodon_post", "ok": False,
+         "error": "missing required param: status", "called_at": None},
+    ])
+    pool = MagicMock()
+    pool.complete = AsyncMock(return_value='{"action": "wait"}')
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    runner = BusinessCycleRunner(
+        store=store, llm_pool=pool, bus=bus, load_skill_catalog=lambda: [],
+    )
+    biz = _make_business()
+    await runner.run_one_cycle(biz)
+    store.recent_skill_calls.assert_awaited_once()
+    assert captured_recent and captured_recent[0]["skill_name"] == "mastodon_post"
+
+
 @pytest.mark.asyncio
 async def test_cycle_non_artifact_action_dispatches_but_bumps_stall():
     """An action that's NOT in ARTIFACT_ACTIONS (e.g. llm_complete) still
@@ -162,6 +315,7 @@ async def test_cycle_non_artifact_action_dispatches_but_bumps_stall():
     store = MagicMock()
     store.update_metadata = AsyncMock()
     store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
     pool = MagicMock()
     pool.complete = AsyncMock(return_value='{"action": "llm_complete", "prompt": "x"}')
     bus = MagicMock()

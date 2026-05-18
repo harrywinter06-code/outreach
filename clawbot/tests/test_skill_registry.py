@@ -47,6 +47,54 @@ def test_registry_rejects_unknown_skill(skills_dir: Path):
     assert record.ok is False
     assert "unknown skill" in record.error.lower()
 
+def test_registry_records_unknown_skill_failure_to_stats_db(skills_dir: Path):
+    """Z2.5b: early-return on unknown skill MUST still write to skill_calls.
+    Without this, activity_score_72h shows 0 even when cycles are firing
+    against hallucinated skill names."""
+    from unittest.mock import AsyncMock, MagicMock
+    reg = SkillRegistry(skills_dir=skills_dir)
+    reg.discover()
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+    reg.set_stats_db(pool)
+    ctx = make_noop_ctx(caller_id="biz_runner", budget_usd=0.05, business_id="biz_x")
+    record = asyncio.run(reg.call("not_a_real_skill", {}, ctx))
+    assert record.ok is False
+    conn.execute.assert_awaited_once()
+    args = conn.execute.call_args.args
+    assert "INSERT INTO skill_calls" in args[0]
+    assert args[1] == "not_a_real_skill"
+    assert args[7] == "biz_x", "business_id must be the last positional arg"
+
+
+def test_registry_records_missing_param_failure_to_stats_db(skills_dir: Path):
+    """Same fix for the missing-param early-return path."""
+    from unittest.mock import AsyncMock, MagicMock
+    reg = SkillRegistry(skills_dir=skills_dir)
+    reg.discover()
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+    reg.set_stats_db(pool)
+    ctx = make_noop_ctx(caller_id="biz_runner", budget_usd=0.05, business_id="biz_y")
+    record = asyncio.run(reg.call("echo", {}, ctx))  # echo requires `text`
+    assert record.ok is False
+    assert "missing required param" in record.error
+    conn.execute.assert_awaited_once()
+    args = conn.execute.call_args.args
+    assert "INSERT INTO skill_calls" in args[0]
+    assert args[7] == "biz_y"
+
+
 def test_registry_skips_files_failing_ast_scan(tmp_path: Path):
     d = tmp_path / "skills"
     d.mkdir()

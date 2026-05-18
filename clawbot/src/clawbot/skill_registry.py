@@ -159,16 +159,17 @@ class SkillRegistry:
     ) -> SkillCallRecord:
         skill = self._skills.get(name)
         if skill is None:
-            return SkillCallRecord(
-                skill_name=name,
-                caller_id=ctx.caller_id,
-                params=params,
-                result=None,
-                cost_usd=0.0,
-                latency_ms=0,
-                ok=False,
+            # Z2.5b: record the failure so activity_score_72h reflects every
+            # attempt (the prior early-return bypassed _record_db_stat, which
+            # made cycling-but-failing businesses look inactive to fitness).
+            record = SkillCallRecord(
+                skill_name=name, caller_id=ctx.caller_id, params=params,
+                result=None, cost_usd=0.0, latency_ms=0, ok=False,
                 error=f"unknown skill: {name}",
             )
+            self._record_live_call(name, False)
+            await self._record_db_stat(record, business_id=ctx.business_id)
+            return record
 
         # Identify which META params lack a default in the run() signature.
         # Params with defaults in run() are optional even if listed in META.
@@ -185,16 +186,14 @@ class SkillRegistry:
         }
         missing = [p for p in required_params if p not in params]
         if missing:
-            return SkillCallRecord(
-                skill_name=name,
-                caller_id=ctx.caller_id,
-                params=params,
-                result=None,
-                cost_usd=0.0,
-                latency_ms=0,
-                ok=False,
+            record = SkillCallRecord(
+                skill_name=name, caller_id=ctx.caller_id, params=params,
+                result=None, cost_usd=0.0, latency_ms=0, ok=False,
                 error=f"missing required param: {missing[0]}",
             )
+            self._record_live_call(name, False)
+            await self._record_db_stat(record, business_id=ctx.business_id)
+            return record
 
         start = time.monotonic()
         record: SkillCallRecord

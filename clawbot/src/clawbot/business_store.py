@@ -383,6 +383,30 @@ class BusinessStore:
             )
         return int(row["n"]) if row else 0
 
+    async def recent_skill_calls(
+        self, *, business_id: str, limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Last N skill calls for this business (successes + failures).
+        Returned in newest-first order; consumed by the business prompt
+        renderer so the LLM can see and correct its prior mistakes."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT skill_name, ok, error, called_at "
+                "FROM skill_calls "
+                "WHERE business_id = $1 "
+                "ORDER BY called_at DESC LIMIT $2",
+                business_id, int(limit),
+            )
+        return [
+            {
+                "skill_name": r["skill_name"],
+                "ok": bool(r["ok"]),
+                "error": r["error"] or "",
+                "called_at": r["called_at"],
+            }
+            for r in rows
+        ]
+
 
 def _to_jsonb_text(value: Any) -> str:
     """asyncpg returns jsonb columns as dict OR str depending on codec. Normalise."""

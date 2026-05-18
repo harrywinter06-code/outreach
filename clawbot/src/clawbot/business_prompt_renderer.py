@@ -61,15 +61,25 @@ ARTIFACT_ACTIONS = (
 )
 
 
+def _entry_name(entry: Any) -> str | None:
+    if entry is None:
+        return None
+    n = getattr(entry, "name", None)
+    if n:
+        return n
+    if isinstance(entry, dict):
+        return entry.get("name")
+    return None
+
+
 def filter_skills_for_business(
     skill_catalog: list[Any], genome: dict[str, Any],
-) -> list[str]:
-    """Return the names of skills relevant to this business's channels +
-    core primitives. Falls back to full catalog if filtering removes too much.
+) -> list[Any]:
+    """Return SkillCatalogEntry objects (NOT just names) relevant to this
+    business's channels + core primitives. Returning full entries lets the
+    prompt render param signatures, not just bare skill names.
 
-    `skill_catalog` is the list of SkillCatalogEntry dataclasses produced
-    by the existing skill_catalog_renderer. Each entry has a `.name` attr.
-    """
+    Falls back to broader catalog if filtering removes too much."""
     if not skill_catalog:
         return []
     channels = [str(c).lower() for c in genome.get("channels", [])]
@@ -77,29 +87,51 @@ def filter_skills_for_business(
     for ch in channels:
         for skill_name in _CHANNEL_SKILL_HINTS.get(ch, ()):
             channel_skills.add(skill_name)
-    out: list[str] = []
+    out: list[Any] = []
+    seen: set[str] = set()
     for entry in skill_catalog:
-        name = getattr(entry, "name", None) or (
-            entry.get("name") if isinstance(entry, dict) else None
-        )
+        name = _entry_name(entry)
         if not name:
             continue
         if name in channel_skills:
-            out.append(name)
+            out.append(entry)
+            seen.add(name)
             continue
         if any(name.startswith(p) for p in _CORE_SKILL_PREFIXES):
-            out.append(name)
+            out.append(entry)
+            seen.add(name)
     # Fallback: if filtering would leave < 10 skills, expose more breadth
     if len(out) < 10:
         for entry in skill_catalog:
-            name = getattr(entry, "name", None) or (
-                entry.get("name") if isinstance(entry, dict) else None
-            )
-            if name and name not in out:
-                out.append(name)
+            name = _entry_name(entry)
+            if name and name not in seen:
+                out.append(entry)
+                seen.add(name)
                 if len(out) >= 30:
                     break
     return out
+
+
+def _format_skill_signature(entry: Any) -> str:
+    """Render one skill as `name(p1: type, p2: type) — description`.
+
+    Description is truncated to keep the prompt compact. The signature is
+    what the LLM needs to construct valid action JSON."""
+    name = _entry_name(entry) or "?"
+    params: dict[str, str] = (
+        getattr(entry, "params", None)
+        or (entry.get("params") if isinstance(entry, dict) else None)
+        or {}
+    )
+    description: str = (
+        getattr(entry, "description", None)
+        or (entry.get("description") if isinstance(entry, dict) else None)
+        or ""
+    )
+    sig_parts = [f"{p}: {t}" for p, t in params.items()]
+    sig = f"{name}({', '.join(sig_parts)})"
+    desc = description.strip().split("\n")[0][:120]
+    return f"- {sig} — {desc}" if desc else f"- {sig}"
 
 
 def render_business_prompt(
@@ -149,26 +181,29 @@ def render_business_prompt(
         f"Cycles without artifact: {stall}"
     )
 
-    # 3. RECENT
+    # 3. RECENT — pulled from skill_calls. Each entry is a dict with keys
+    # `skill_name`, `ok`, `error` (nullable). Shows the LLM exactly what it
+    # tried last and why it failed — so the next cycle can correct.
     recent_lines: list[str] = []
     for act in (recent_actions or [])[-5:]:
-        action = act.get("action") or act.get("skill_name") or "?"
+        skill = act.get("skill_name") or act.get("action") or "?"
         ok = "OK" if act.get("ok", True) else "FAIL"
-        recent_lines.append(f"  - {ok} {action}")
-    for res in (recent_skill_results or [])[-3:]:
-        msg = str(res.get("message") or res.get("result") or "")[:200]
-        if msg:
-            recent_lines.append(f"    result: {msg}")
+        err = (act.get("error") or "").strip()
+        if err and not act.get("ok", True):
+            recent_lines.append(f"  - {ok}  {skill}  ← {err[:120]}")
+        else:
+            recent_lines.append(f"  - {ok}  {skill}")
     sections.append(
-        "=== RECENT ACTIONS ===\n" +
+        "=== RECENT ATTEMPTS ===\n" +
         ("\n".join(recent_lines) if recent_lines else "(none yet — this is your first cycle)")
     )
 
-    # 4. SKILLS
-    skill_names = filter_skills_for_business(skill_catalog, g)
+    # 4. SKILLS — render full signatures so the LLM constructs valid actions.
+    relevant_entries = filter_skills_for_business(skill_catalog, g)
+    sig_lines = [_format_skill_signature(e) for e in relevant_entries]
     sections.append(
-        "=== AVAILABLE SKILLS ===\n"
-        f"{', '.join(skill_names) if skill_names else '(none available)'}"
+        "=== AVAILABLE SKILLS (use ONLY these; include EVERY listed param) ===\n"
+        + ("\n".join(sig_lines) if sig_lines else "(none available)")
     )
 
     # 5. MANDATE
