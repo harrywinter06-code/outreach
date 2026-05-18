@@ -164,6 +164,58 @@ async def test_payment_intent_succeeded_also_routes(mock_store):
     assert call["amount_gbp"] == 3.0
 
 
+def test_signed_post_returns_dict_not_stripe_object_to_route_event(monkeypatch):
+    """Regression: stripe.Webhook.construct_event returns a StripeObject
+    that doesn't support .get(). The endpoint must coerce to dict (via
+    json.loads on the raw payload) before passing to _route_event."""
+    import json as _json
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    from clawbot import stripe_webhook
+    from clawbot.config import settings
+
+    # Wire a fake secret + mock store
+    monkeypatch.setattr(settings, "stripe_webhook_secret", "whsec_test_only")
+    mock_store = MagicMock()
+    mock_store.record_revenue = AsyncMock(return_value=True)
+    prior = stripe_webhook.BUSINESS_STORE
+    stripe_webhook.BUSINESS_STORE = mock_store
+
+    try:
+        app = FastAPI()
+        app.include_router(stripe_webhook.get_router())
+        client = TestClient(app)
+
+        import hmac, hashlib, time
+        event = {
+            "id": "evt_signed_test", "object": "event",
+            "type": "charge.succeeded",
+            "data": {"object": {
+                "id": "ch_test_signed", "object": "charge",
+                "amount": 250, "currency": "gbp",
+                "metadata": {"business_id": "biz_xyz"},
+            }},
+        }
+        payload = _json.dumps(event, separators=(",", ":")).encode()
+        ts = int(time.time())
+        signed = f"{ts}.".encode() + payload
+        sig = hmac.new(b"whsec_test_only", signed, hashlib.sha256).hexdigest()
+        header = f"t={ts},v1={sig}"
+
+        response = client.post(
+            "/webhook/stripe", content=payload,
+            headers={"stripe-signature": header, "content-type": "application/json"},
+        )
+        assert response.status_code == 200, (
+            f"signed POST must return 200, not {response.status_code}: {response.text}"
+        )
+        body = response.json()
+        assert body["routed"] is True, f"signed event must route: {body}"
+        mock_store.record_revenue.assert_awaited_once()
+    finally:
+        stripe_webhook.BUSINESS_STORE = prior
+
+
 def test_webhook_endpoint_binds_request_correctly():
     """Regression: `from __future__ import annotations` makes annotations
     strings. If Request is imported inside the router builder, FastAPI

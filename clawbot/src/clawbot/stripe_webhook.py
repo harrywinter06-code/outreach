@@ -65,8 +65,13 @@ def _build_router():
         else:
             try:
                 import stripe
-                event = stripe.Webhook.construct_event(payload, sig_header, secret)
-            except ValueError as exc:
+                # construct_event verifies the signature. We discard its return
+                # value (a StripeObject that doesn't support .get()) and use the
+                # plain JSON dict for downstream routing — the payload is now
+                # trusted because the signature matched.
+                stripe.Webhook.construct_event(payload, sig_header, secret)
+                event = json.loads(payload.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 logger.warning("Stripe webhook payload parse failed: %s", exc)
                 raise HTTPException(status_code=400, detail="invalid_payload")
             except Exception as exc:
