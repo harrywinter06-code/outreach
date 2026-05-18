@@ -110,7 +110,7 @@ async def main() -> None:
     await db.init_schema()
 
     from clawbot.hypothesis_store import HypothesisStore
-    hyp_store = HypothesisStore(db.pool)
+    hyp_store = HypothesisStore(db.pool, max_active=settings.max_active_hypotheses)
     await hyp_store.init_schema()
     if await maybe_seed_h1(hyp_store):
         logger.info("Seeded initial hypothesis H1")

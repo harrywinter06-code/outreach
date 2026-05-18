@@ -53,6 +53,21 @@ from clawbot.hypothesis_store import HypothesisStore
 
 logger = logging.getLogger(__name__)
 
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Done-callback that logs unhandled exceptions from background tasks.
+
+    Without this, a crashed background task is silently swallowed by asyncio
+    unless something inspects task.exception(). Attach to every create_task call."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background task %r died with exception:", task.get_name(), exc_info=exc,
+        )
+
+
 AGENTS_DIR = Path(__file__).parent.parent.parent / "agents"
 METRICS_DIR = Path("/metrics")
 
@@ -240,13 +255,14 @@ def _load_skill_catalog() -> list:
         meta = REGISTRY.get_meta(name)
         if meta is None:
             continue
-        # META may carry a `roles` hint we honour; default to empty (universal).
-        roles: list[str] = []
+        # Read explicit roles from META if the skill specifies them; fall back
+        # to empty (universal) so prefix-based defaults in the renderer apply.
+        roles_hint: list[str] = getattr(meta, "roles", None) or []
         out.append(SkillCatalogEntry(
             name=meta.name,
             description=meta.description,
             params=meta.params,
-            roles=roles,
+            roles=roles_hint,
         ))
     return out
 
@@ -306,35 +322,38 @@ class Scheduler:
             from clawbot.directive_router import DIRECTIVE_TOPICS
             for topic in DIRECTIVE_TOPICS:
                 await self._bus.subscribe(topic)
+        def _ct(coro, *, name: str) -> asyncio.Task:
+            """Create a task and attach the exception-logging done-callback."""
+            t = asyncio.create_task(coro, name=name)
+            t.add_done_callback(_log_task_exception)
+            return t
+
         tasks = [
-            asyncio.create_task(self._executive_loop(), name="executive-ceo"),
-            asyncio.create_task(self._board_loop(), name="board"),
-            asyncio.create_task(self._evolution_loop(), name="evolution"),
-            asyncio.create_task(self._kill_switch_watchdog(), name="killswitch"),
-            asyncio.create_task(self._dynamic_agent_sync_loop(), name="registry-sync"),
-            asyncio.create_task(self._opportunity_scanner_loop(), name="opportunity-scanner"),
-            asyncio.create_task(self._coder_loop(), name="cto-coder"),
-            asyncio.create_task(self._code_change_watcher(), name="code-change-watcher"),
-            asyncio.create_task(self._drift_audit_loop(), name="drift-audit"),
-            asyncio.create_task(self._candidate_arbiter_loop(), name="candidate-arbiter"),
-            asyncio.create_task(self._fitness_writer_loop(), name="fitness-writer"),
-            asyncio.create_task(self._exploration_loop(), name="exploration"),
-            asyncio.create_task(self._board_resolution_subscriber(), name="board-subscriber"),
-            asyncio.create_task(self._run_auto_diversification_loop(), name="auto-diversification"),
+            _ct(self._executive_loop(), name="executive-ceo"),
+            _ct(self._board_loop(), name="board"),
+            _ct(self._evolution_loop(), name="evolution"),
+            _ct(self._kill_switch_watchdog(), name="killswitch"),
+            _ct(self._dynamic_agent_sync_loop(), name="registry-sync"),
+            _ct(self._opportunity_scanner_loop(), name="opportunity-scanner"),
+            _ct(self._coder_loop(), name="cto-coder"),
+            _ct(self._code_change_watcher(), name="code-change-watcher"),
+            _ct(self._drift_audit_loop(), name="drift-audit"),
+            _ct(self._candidate_arbiter_loop(), name="candidate-arbiter"),
+            _ct(self._fitness_writer_loop(), name="fitness-writer"),
+            _ct(self._exploration_loop(), name="exploration"),
+            _ct(self._board_resolution_subscriber(), name="board-subscriber"),
+            _ct(self._run_auto_diversification_loop(), name="auto-diversification"),
+            _ct(self._run_progress_score_writer_loop(), name="progress-score-writer"),
         ]
         # Lieutenants: each non-CEO executive runs its own loop reading its own SOUL.
         # Without these the org chart is structural but only the CEO does any work.
         for lieutenant in ("cfo", "cmo", "coo", "cto"):
-            tasks.append(asyncio.create_task(
-                self._lieutenant_loop(lieutenant), name=f"executive-{lieutenant}"
+            tasks.append(_ct(
+                self._lieutenant_loop(lieutenant), name=f"executive-{lieutenant}",
             ))
         if self._brain is not None:
-            tasks.append(asyncio.create_task(
-                self._brain_retention_loop(), name="brain-retention"
-            ))
-            tasks.append(asyncio.create_task(
-                self._lateral_thinker_loop(), name="lateral-thinker"
-            ))
+            tasks.append(_ct(self._brain_retention_loop(), name="brain-retention"))
+            tasks.append(_ct(self._lateral_thinker_loop(), name="lateral-thinker"))
         if self._causal_store is not None and self._registry is not None:
             from clawbot.directive_router import DirectiveRouter, DIRECTIVE_TOPICS
             from clawbot.agent_factory import AgentFactory
@@ -352,24 +371,16 @@ class Scheduler:
                 brain=self._brain,
                 db_pool=self._db_pool,
             )
-            tasks.append(asyncio.create_task(router.run(), name="directive-router"))
+            tasks.append(_ct(router.run(), name="directive-router"))
         # Operator escalation: subscriber persists + pushes; reply poller republishes.
-        tasks.append(asyncio.create_task(
-            self._escalation_subscriber_loop(), name="escalation-subscriber"
-        ))
-        tasks.append(asyncio.create_task(
-            self._operator_reply_loop(), name="operator-reply"
-        ))
+        tasks.append(_ct(self._escalation_subscriber_loop(), name="escalation-subscriber"))
+        tasks.append(_ct(self._operator_reply_loop(), name="operator-reply"))
         if settings.telegram_bot_token and settings.telegram_chat_id:
-            tasks.append(asyncio.create_task(
-                self._telegram_receiver_loop(), name="telegram-receiver"
-            ))
+            tasks.append(_ct(self._telegram_receiver_loop(), name="telegram-receiver"))
         # Chat responder runs regardless of channel — operator might also write
         # to the inbox JSONL directly via the CLI for testing.
-        tasks.append(asyncio.create_task(
-            self._chat_responder_loop(), name="chat-responder"
-        ))
-        tasks.append(asyncio.create_task(
+        tasks.append(_ct(self._chat_responder_loop(), name="chat-responder"))
+        tasks.append(_ct(
             self._run_company_fitness_snapshot_loop(),
             name="company-fitness-snapshot",
         ))
@@ -456,7 +467,7 @@ class Scheduler:
         try:
             from clawbot.skill_catalog_renderer import render_for_role
             entries = _load_skill_catalog()
-            catalog_block = "\n\n" + render_for_role("ceo", entries) + "\n"
+            catalog_block = "\n\n" + render_for_role("ceo", entries, compact=True) + "\n"
         except Exception as exc:
             logger.warning("Skill catalog render failed (continuing without it): %s", exc)
 
@@ -670,7 +681,7 @@ class Scheduler:
         try:
             from clawbot.skill_catalog_renderer import render_for_role
             entries = _load_skill_catalog()
-            catalog_block = "\n\n" + render_for_role(agent_id, entries) + "\n"
+            catalog_block = "\n\n" + render_for_role(agent_id, entries, compact=True) + "\n"
         except Exception as exc:
             logger.warning("Skill catalog render failed for %s (continuing): %s", agent_id, exc)
 
@@ -1022,6 +1033,7 @@ class Scheduler:
                 self._worker_agent_loop(spec),
                 name=f"agent-{spec.agent_id}",
             )
+            task.add_done_callback(_log_task_exception)
             self._agent_tasks[spec.agent_id] = task
             await self._bus.subscribe(f"inbox.{spec.agent_id}")
 
@@ -1611,7 +1623,14 @@ class Scheduler:
                         continue
                     created = datetime.fromisoformat(created_iso)
                     age_days = (now - created).total_seconds() / 86400.0
-                    kill_max_days = int(h["kill_criteria"].get("max_days_without_revenue", 14))
+                    kc = h.get("kill_criteria") or {}
+                    if not isinstance(kc, dict):
+                        kc = {}
+                    raw = kc.get("max_days_without_revenue", 14) or 14
+                    try:
+                        kill_max_days = int(raw)
+                    except (TypeError, ValueError):
+                        kill_max_days = 14
                     progress = float(h.get("progress_score", 0.0))
 
                     if _should_diversify_for_hypothesis(
@@ -1640,24 +1659,82 @@ class Scheduler:
             except Exception as exc:
                 logger.error("Auto-diversification loop iteration failed: %s", exc)
 
+    # ── Progress score writer (audit fix #3) ────────────────────────────────
+
+    async def _run_progress_score_writer_loop(self) -> None:
+        """Every 30 minutes, compute progress_score per active hypothesis and
+        persist it via HypothesisStore.update_progress_score.
+
+        Without this writer, progress_score stays at 0.0 forever and the
+        auto-diversification trigger fires unconditionally past 50% of the kill
+        window, regardless of actual plan progress.
+
+        Formula (v1): score = advanced / max(2, advanced + active + pivoted)
+        Plans are the only schema-level hypothesis_id link we have today.
+        """
+        PROGRESS_INTERVAL_S = 1800  # 30 min
+        while True:
+            await asyncio.sleep(PROGRESS_INTERVAL_S)
+            if not (hasattr(self, "_db_pool") and self._db_pool is not None):
+                continue
+            try:
+                hyp_store = HypothesisStore(
+                    self._db_pool, max_active=settings.max_active_hypotheses,
+                )
+                portfolio = await hyp_store.get_active_portfolio()
+                for h in portfolio:
+                    hid = h["hypothesis_id"]
+                    async with self._db_pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT status, COUNT(*) AS n FROM plans "
+                            "WHERE hypothesis_id=$1 "
+                            "AND updated_at > NOW() - INTERVAL '7 days' "
+                            "GROUP BY status",
+                            hid,
+                        )
+                    counts = {r["status"]: int(r["n"]) for r in rows}
+                    advanced = counts.get("done", 0)
+                    active = counts.get("active", 0)
+                    pivoted = counts.get("pivoted", 0)
+                    total = max(2, advanced + active + pivoted)
+                    score = min(1.0, advanced / total)
+                    await hyp_store.update_progress_score(
+                        hypothesis_id=hid, score=score,
+                    )
+                    logger.info(
+                        "progress_score updated: %s -> %.3f (advanced=%d total=%d)",
+                        h["name"], score, advanced, total,
+                    )
+            except Exception as exc:
+                logger.error("progress_score writer loop failed: %s", exc)
+
     # ── Company fitness snapshot (Task 4) ───────────────────────────────────
 
     async def _run_company_fitness_snapshot_loop(self) -> None:
-        """Once per UTC day, compute + persist the company fitness snapshot."""
+        """Snapshot company fitness once per UTC day at 00:05 UTC.
+
+        Sleeps precisely until the next target time — avoids firing immediately
+        on startup and prevents jitter from cumulative sleep drift.
+        """
         from clawbot.company_fitness import compute_and_snapshot
-        last_snapshot_date = None
+        from datetime import timedelta
+
+        TARGET_UTC_HOUR = 0  # snapshot at 00:05 UTC each day
         while True:
             now = datetime.now(UTC)
-            today_str = now.date().isoformat()
-            if today_str != last_snapshot_date:
-                if hasattr(self, "_db_pool") and self._db_pool is not None:
-                    try:
-                        score = await compute_and_snapshot(db_pool=self._db_pool)
-                        logger.info("Company fitness snapshot: score=%.3f", score.score)
-                        last_snapshot_date = today_str
-                    except Exception as exc:
-                        logger.error("Company fitness snapshot failed: %s", exc)
-            await asyncio.sleep(900)  # check every 15 min; only acts once per day
+            target = now.replace(
+                hour=TARGET_UTC_HOUR, minute=5, second=0, microsecond=0,
+            )
+            if target <= now:
+                target = target + timedelta(days=1)
+            sleep_s = (target - now).total_seconds()
+            await asyncio.sleep(sleep_s)
+            if hasattr(self, "_db_pool") and self._db_pool is not None:
+                try:
+                    score = await compute_and_snapshot(db_pool=self._db_pool)
+                    logger.info("Company fitness snapshot: score=%.3f", score.score)
+                except Exception as exc:
+                    logger.error("Company fitness snapshot failed: %s", exc)
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -109,14 +110,14 @@ class Settings(BaseSettings):
     # Portfolio operator: hard cap on concurrent active hypotheses.
     # 3 is the realistic ceiling at free-tier LLM scale; raise to 5-10 on paid
     # tier. Setting to 1 reverts to single-hypothesis behaviour.
-    max_active_hypotheses: int = 3
+    max_active_hypotheses: int = Field(default=3, ge=1, le=20)
 
     # Capital integration — operator-gated graduation from Stripe test mode.
     # Until stripe_live_mode_enabled is True AND both caps > 0, _LivePayments
     # refuses any live-mode spend. Test-mode keys bypass these gates entirely.
     stripe_live_mode_enabled: bool = False
-    capital_daily_cap_gbp: float = 0.0
-    capital_weekly_cap_gbp: float = 0.0
+    capital_daily_cap_gbp: float = Field(default=0.0, ge=0.0, le=10000.0)
+    capital_weekly_cap_gbp: float = Field(default=0.0, ge=0.0, le=50000.0)
     capital_freeze: bool = False  # emergency kill — halts ALL authorizations when True
 
     accounts_vault_key: str = ""
