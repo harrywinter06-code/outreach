@@ -1,3 +1,16 @@
+# Swarm public endpoint. Caddy auto-provisions a Let's Encrypt cert for
+# this hostname on first request (DNS A-record must already point at the VPS).
+# Operator email is for LE renewal warnings — change to a real address.
+{
+    email harrywinter06@gmail.com
+}
+
+clawbot.veriflowlabs.co.uk {
+    reverse_proxy clawbot:8080
+}
+
+# Fallback for direct-IP access during DNS propagation or for debugging.
+# Stripe webhooks MUST hit the https hostname above — IP access is HTTP only.
 :80 {
     reverse_proxy clawbot:8080
 }

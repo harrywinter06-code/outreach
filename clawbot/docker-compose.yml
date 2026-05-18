@@ -31,9 +31,11 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       - clawbot
 
@@ -66,6 +68,7 @@ volumes:
   pg_data:
   metrics_data:
   caddy_data:
+  caddy_config:
 
 # VPS sizing: minimum Hetzner CX32 (4 vCPU, 8GB RAM)
 # CX22 (4GB) is insufficient with 3 concurrent Chromium instances (~500MB each)
