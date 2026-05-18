@@ -189,6 +189,32 @@ async def _maybe_widget_update(response: str | None, agent_id: str, metrics_dir:
         logger.warning("_maybe_widget_update failed for %s: %s", agent_id, exc)
 
 
+def _load_skill_catalog() -> list:
+    """Snapshot of the registered skills as catalog entries. Called per cycle
+    so newly-registered skills become available without restarting.
+
+    Returns an empty list if the registry hasn't initialised — the renderer
+    handles the empty case gracefully."""
+    from clawbot.skill_registry import REGISTRY
+    from clawbot.skill_catalog_renderer import SkillCatalogEntry
+    if REGISTRY is None:
+        return []
+    out: list[SkillCatalogEntry] = []
+    for name in REGISTRY.list_names():
+        meta = REGISTRY.get_meta(name)
+        if meta is None:
+            continue
+        # META may carry a `roles` hint we honour; default to empty (universal).
+        roles: list[str] = []
+        out.append(SkillCatalogEntry(
+            name=meta.name,
+            description=meta.description,
+            params=meta.params,
+            roles=roles,
+        ))
+    return out
+
+
 class Scheduler:
     def __init__(
         self,
@@ -351,20 +377,30 @@ class Scheduler:
         metrics = await self._load_metrics()
         recent_decisions = await self._brain_recall(metrics)
         board_directive = self._latest_board_directive()
+        catalog_block = ""
+        try:
+            from clawbot.skill_catalog_renderer import render_for_role
+            entries = _load_skill_catalog()
+            catalog_block = "\n\n" + render_for_role("ceo", entries) + "\n"
+        except Exception as exc:
+            logger.warning("Skill catalog render failed (continuing without it): %s", exc)
+
         messages = [
             {"role": "system", "content": soul},
             {
                 "role": "user",
                 "content": (
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}"
-                    f"{board_directive}{recent_decisions}\n\n"
-                    "What is your next action? Output JSON with one of these action schemas:\n"
+                    f"{board_directive}{recent_decisions}"
+                    f"{catalog_block}"
+                    "\nWhat is your next action? Output JSON with one of these action schemas:\n"
                     '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
                     '| {"action": "fire", "agent_id": "..."} '
                     '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
                     '| {"action": "publish_product", "title": "...", "description": "..."} '
                     '| {"action": "message", "target": "<agent_id>", "message": "..."} '
-                    '| {"action": "wait", "directive": "reason"}\n'
+                    '| {"action": "wait", "directive": "reason"} '
+                    '| {"action": "<skill_name>", ...params per the skill catalog above}\n'
                     'Add: "priority": "high|medium|low", "next_wakeup_s": <integer 60-1800> '
                     "(how many seconds until your next cycle), "
                     '"escalate": null | {"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
@@ -521,19 +557,29 @@ class Scheduler:
         await self._bus.publish(f"{agent_id}.cycle_start", {"agent": agent_id, "ts": datetime.now(UTC).isoformat()})
         soul = soul_path.read_text(encoding="utf-8")
         metrics = await self._load_metrics()
+        catalog_block = ""
+        try:
+            from clawbot.skill_catalog_renderer import render_for_role
+            entries = _load_skill_catalog()
+            catalog_block = "\n\n" + render_for_role(agent_id, entries) + "\n"
+        except Exception as exc:
+            logger.warning("Skill catalog render failed for %s (continuing): %s", agent_id, exc)
+
         messages = [
             {"role": "system", "content": soul},
             {
                 "role": "user",
                 "content": (
-                    f"Current metrics:\n{json.dumps(metrics, indent=2)}\n\n"
-                    "What is your next action? Output JSON with one of these action schemas:\n"
+                    f"Current metrics:\n{json.dumps(metrics, indent=2)}"
+                    f"{catalog_block}"
+                    "\nWhat is your next action? Output JSON with one of these action schemas:\n"
                     '{"action": "hire", "role": "...", "mandate": "...", "supervisor": "..."} '
                     '| {"action": "fire", "agent_id": "..."} '
                     '| {"action": "assign_task", "assigned_to": "<agent_id>", "title": "...", "description": "..."} '
                     '| {"action": "publish_product", "title": "...", "description": "..."} '
                     '| {"action": "message", "target": "<agent_id>", "message": "..."} '
-                    '| {"action": "wait", "directive": "reason"}\n'
+                    '| {"action": "wait", "directive": "reason"} '
+                    '| {"action": "<skill_name>", ...params per the skill catalog above}\n'
                     'Add: "priority": "high|medium|low", "next_wakeup_s": <integer 60-1800> '
                     "(how many seconds until your next cycle), "
                     '"escalate": null | {"severity": "info|request|warning|urgent", "summary": "...", "detail": "..."}'
