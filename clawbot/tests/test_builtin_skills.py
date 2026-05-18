@@ -30,6 +30,13 @@ EXPECTED_BUILTINS = {
     "hn_show_submit", "directory_submit_g2", "directory_submit_capterra",
     "directory_submit_alternative_to", "haro_respond",
     "prnewswire_submit", "podcast_pitch",
+    # Phase H — Task 26 finance + UK-gov pack
+    "companies_house_search", "companies_house_get_company",
+    "companies_house_get_officers", "companies_house_get_filings",
+    "companies_house_monitor_filings", "hmrc_check_vat_number",
+    "freeagent_create_invoice", "freeagent_record_expense",
+    "xero_reconcile_transaction",
+    "compute_runway_months", "ir35_determine_status",
 }
 
 
