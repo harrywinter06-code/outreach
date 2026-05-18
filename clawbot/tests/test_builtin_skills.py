@@ -32,6 +32,10 @@ EXPECTED_BUILTINS = {
     "gsc_query", "bing_webmaster_query", "serp_check", "keyword_research",
     "backlink_audit", "sitemap_generate", "sitemap_submit",
     "schema_org_generate", "lighthouse_audit", "robots_txt_check",
+    "web_deep_research", "web_diff_page", "news_monitor_topic",
+    "social_listen_brand", "competitor_pricing_scrape", "github_trending",
+    "arxiv_search", "arxiv_summarize", "reviews_scrape_g2",
+    "glassdoor_scrape_company", "crunchbase_lookup",
 }
 
 
