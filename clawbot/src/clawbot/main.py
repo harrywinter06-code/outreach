@@ -27,6 +27,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def maybe_seed_h1(store) -> bool:
+    """Insert the initial H1 hypothesis if none is active. Returns True if seeded."""
+    current = await store.get_active()
+    if current is not None:
+        return False
+    await store.set_active(
+        name="H1",
+        description=(
+            "£9 IR35 contractor status assessment PDF sold on Gumroad. "
+            "Distribution via Substack newsletter and LinkedIn. "
+            "Operator (Harry) creates the Gumroad product manually; "
+            "agents do drafting and distribution."
+        ),
+        kill_criteria={
+            "max_days_without_revenue": 14,
+            "min_qualified_leads_by_day": [7, 3],
+        },
+    )
+    return True
+
+
 def _startup_checklist() -> None:
     """Fail loudly with specific instructions if revenue infrastructure is missing.
 
@@ -83,6 +104,13 @@ async def main() -> None:
         registry.connect(), db.connect(), homeostasis.connect(),
     )
     await db.init_schema()
+
+    from clawbot.hypothesis_store import HypothesisStore
+    hyp_store = HypothesisStore(db.pool)
+    await hyp_store.init_schema()
+    if await maybe_seed_h1(hyp_store):
+        logger.info("Seeded initial hypothesis H1")
+
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)
