@@ -189,3 +189,53 @@ class BoardVotingSystem:
 
     async def quorum_reached(self) -> bool:
         return await self.votes_cast_today() >= 3
+
+
+GENERATE_HYPOTHESIS_PROMPT = """\
+You are the board of an autonomous AI company. The current strategic hypothesis
+has been voted down. You must propose the next one.
+
+Previous hypothesis: {previous_name} — {previous_description}
+Pivot rationale: {pivot_rationale}
+
+Propose a NEW hypothesis that:
+1. Materially differs from the previous one (don't propose a near-duplicate)
+2. Has a clear kill criterion so it can be falsified in 14-21 days
+3. Plays to the company's strengths: LLM synthesis at scale, browser automation,
+   autonomous email and payments, but limited by zero existing audience and no
+   credit history for paid ads
+4. Has unit economics that could plausibly reach £2k/month within 60 days
+
+Output ONLY JSON in this shape, no preamble:
+{{
+  "name": "H<N>",
+  "description": "1-2 sentence description of the bet",
+  "kill_criteria": {{
+    "max_days_without_revenue": <int>,
+    "min_outreach_replies_by_day": [<day>, <count>],
+    "min_qualified_leads_by_day": [<day>, <count>]
+  }}
+}}
+"""
+
+
+async def generate_hypothesis_from_pivot(
+    *, pool, store, previous_name: str, previous_description: str, pivot_rationale: str,
+) -> str:
+    """LLM-generate a new hypothesis based on the board's pivot rationale and
+    write it to the active_hypothesis store. Returns the new hypothesis_id."""
+    messages = [
+        {"role": "system", "content": "You are the board of an autonomous AI company. Output only valid JSON."},
+        {"role": "user", "content": GENERATE_HYPOTHESIS_PROMPT.format(
+            previous_name=previous_name,
+            previous_description=previous_description,
+            pivot_rationale=pivot_rationale,
+        )},
+    ]
+    raw = await pool.complete(messages, tier="executive", max_tokens=600)
+    data = json.loads(raw)
+    return await store.set_active(
+        name=str(data["name"])[:40],
+        description=str(data["description"])[:400],
+        kill_criteria=data.get("kill_criteria", {}),
+    )

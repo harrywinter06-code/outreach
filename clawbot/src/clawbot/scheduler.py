@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from clawbot.task_store import TaskStore
 
 from clawbot.plan_store import PlanStore
+from clawbot.hypothesis_store import HypothesisStore
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +383,21 @@ class Scheduler:
         metrics = await self._load_metrics()
         recent_decisions = await self._brain_recall(metrics)
         board_directive = self._latest_board_directive()
+        active_hyp_block = ""
+        try:
+            if hasattr(self, "_db_pool") and self._db_pool is not None:
+                hyp_store = HypothesisStore(self._db_pool)
+                active = await hyp_store.get_active()
+                if active is not None:
+                    active_hyp_block = (
+                        f"\n\nACTIVE HYPOTHESIS ({active['name']}): {active['description']}\n"
+                        f"Kill criteria: {active['kill_criteria']}\n"
+                        "Every decision you make must serve this hypothesis. If you believe "
+                        "the kill criteria are met or the bet is broken, escalate to the board "
+                        "for a PIVOT vote.\n"
+                    )
+        except Exception as exc:
+            logger.warning("Active hypothesis load failed (continuing): %s", exc)
         catalog_block = ""
         try:
             from clawbot.skill_catalog_renderer import render_for_role
@@ -426,7 +442,7 @@ class Scheduler:
                 "role": "user",
                 "content": (
                     f"Current metrics:\n{json.dumps(metrics, indent=2)}"
-                    f"{board_directive}{recent_decisions}"
+                    f"{board_directive}{active_hyp_block}{recent_decisions}"
                     f"{catalog_block}"
                     f"{plan_block}"
                     "\nWhat is your next action? Output JSON with one of these action schemas:\n"
@@ -1314,6 +1330,21 @@ class Scheduler:
                     "ts": datetime.now(UTC).isoformat(),
                 }
                 logger.info("Board resolution cached: %s", self._latest_resolution["outcome"])
+                if msg.get("outcome") in ("PIVOT", "RESET"):
+                    try:
+                        from clawbot.board import generate_hypothesis_from_pivot
+                        if hasattr(self, "_db_pool") and self._db_pool is not None:
+                            hyp_store = HypothesisStore(self._db_pool)
+                            current = await hyp_store.get_active()
+                            prev_name = current["name"] if current else "H1"
+                            prev_desc = current["description"] if current else "Initial hypothesis"
+                            await generate_hypothesis_from_pivot(
+                                pool=self._pool, store=hyp_store,
+                                previous_name=prev_name, previous_description=prev_desc,
+                                pivot_rationale=msg.get("action_required", "")[:400],
+                            )
+                    except Exception as exc:
+                        logger.error("Hypothesis generation on pivot failed: %s", exc)
 
     def _latest_board_directive(self) -> str:
         """Render the latest cached resolution into a prompt-friendly block."""
