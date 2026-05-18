@@ -29,6 +29,9 @@ EXPECTED_BUILTINS = {
     "browser_signup", "browser_form_fill", "browser_extract_structured",
     "browser_solve_captcha", "browser_save_session", "browser_load_session",
     "browser_navigate_and_record", "browser_screenshot_element",
+    "gsc_query", "bing_webmaster_query", "serp_check", "keyword_research",
+    "backlink_audit", "sitemap_generate", "sitemap_submit",
+    "schema_org_generate", "lighthouse_audit", "robots_txt_check",
 }
 
 
