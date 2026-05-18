@@ -99,6 +99,38 @@ def _is_skeleton_crew_hour(now: datetime | None = None) -> bool:
     return hour >= 23 or hour < 6
 
 
+def _should_diversify_for_hypothesis(
+    *,
+    age_days: float,
+    progress_score: float,
+    portfolio_size: int,
+    max_active: int,
+    kill_max_days: int,
+) -> bool:
+    """Pure-function diversification trigger.
+
+    Spawn a new hypothesis when:
+    - The existing hypothesis is past 50% of its kill window
+    - AND progress on it is below 20%
+    - AND the portfolio has room (< max_active)
+
+    All three must hold. Each guards against a failure mode:
+    - Time-fraction guard: don't spawn for bets that just started
+    - Progress guard: don't spawn alongside working bets
+    - Capacity guard: don't exceed the substrate's resource floor
+    """
+    if portfolio_size >= max_active:
+        return False
+    if kill_max_days <= 0:
+        return False
+    time_fraction = age_days / kill_max_days
+    if time_fraction < 0.5:
+        return False
+    if progress_score >= 0.20:
+        return False
+    return True
+
+
 import re as _re
 
 
@@ -287,6 +319,7 @@ class Scheduler:
             asyncio.create_task(self._fitness_writer_loop(), name="fitness-writer"),
             asyncio.create_task(self._exploration_loop(), name="exploration"),
             asyncio.create_task(self._board_resolution_subscriber(), name="board-subscriber"),
+            asyncio.create_task(self._run_auto_diversification_loop(), name="auto-diversification"),
         ]
         # Lieutenants: each non-CEO executive runs its own loop reading its own SOUL.
         # Without these the org chart is structural but only the CEO does any work.
@@ -1536,6 +1569,64 @@ class Scheduler:
                 logger.error("Opportunity scanner cycle failed: %s", exc)
             interval = REDDIT_INTERVAL_S * 3 if _is_skeleton_crew_hour() else REDDIT_INTERVAL_S
             await asyncio.sleep(interval)
+
+    # ── Auto-diversification (Task 0c) ──────────────────────────────────────
+
+    async def _run_auto_diversification_loop(self) -> None:
+        """Every 6 hours, check the portfolio. If any active bet is stagnant
+        (past 50% time + low progress), spawn a fresh one via the board's
+        existing generator. Cap-respecting; does nothing when portfolio is full."""
+        DIVERSIFICATION_INTERVAL_S = 6 * 3600  # 6 hours
+        while True:
+            await asyncio.sleep(DIVERSIFICATION_INTERVAL_S)
+            if not (hasattr(self, "_db_pool") and self._db_pool is not None):
+                continue
+            try:
+                from clawbot.board import generate_hypothesis_for_portfolio
+
+                hyp_store = HypothesisStore(
+                    self._db_pool,
+                    max_active=settings.max_active_hypotheses,
+                )
+                portfolio = await hyp_store.get_active_portfolio()
+                if len(portfolio) >= settings.max_active_hypotheses:
+                    continue  # No room
+
+                now = datetime.now(UTC)
+                for h in portfolio:
+                    created_iso = h.get("created_at")
+                    if not created_iso:
+                        continue
+                    created = datetime.fromisoformat(created_iso)
+                    age_days = (now - created).total_seconds() / 86400.0
+                    kill_max_days = int(h["kill_criteria"].get("max_days_without_revenue", 14))
+                    progress = float(h.get("progress_score", 0.0))
+
+                    if _should_diversify_for_hypothesis(
+                        age_days=age_days, progress_score=progress,
+                        portfolio_size=len(portfolio),
+                        max_active=settings.max_active_hypotheses,
+                        kill_max_days=kill_max_days,
+                    ):
+                        logger.info(
+                            "Auto-diversification trigger: spawning new hypothesis "
+                            "alongside stagnant %s (age=%.1fd, progress=%.2f)",
+                            h["name"], age_days, progress,
+                        )
+                        await generate_hypothesis_for_portfolio(
+                            pool=self._pool, store=hyp_store,
+                            previous_name=h["name"],
+                            previous_description=h["description"],
+                            pivot_rationale=(
+                                f"Auto-diversification: {h['name']} is stagnant "
+                                f"(age {age_days:.1f}d, progress {progress:.2f}). "
+                                f"Spawning a new bet alongside it to diversify."
+                            ),
+                            max_active=settings.max_active_hypotheses,
+                        )
+                        break  # Spawn at most one per cycle
+            except Exception as exc:
+                logger.error("Auto-diversification loop iteration failed: %s", exc)
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
