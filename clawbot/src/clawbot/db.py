@@ -111,3 +111,22 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_skill_calls_name_time
             ON skill_calls (skill_name, called_at DESC)
         """)
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    plan_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    milestone_idx INTEGER NOT NULL,
+                    hypothesis TEXT NOT NULL,
+                    success_criteria TEXT NOT NULL,
+                    evidence TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (agent_id, plan_id, milestone_idx)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plans_agent_status "
+                "ON plans(agent_id, status, milestone_idx)"
+            )
