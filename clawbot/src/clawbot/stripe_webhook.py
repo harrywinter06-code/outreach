@@ -29,9 +29,12 @@ from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
-# Set by main.py once BusinessStore is instantiated. The webhook reads it
-# at request time so the module can be imported before the store exists.
+# Set by main.py at startup. The webhook reads them at request time so
+# this module can be imported before the components exist.
 BUSINESS_STORE: Any | None = None
+LLM_POOL: Any | None = None      # Z3: needed for fulfilment skill LLM calls
+BUS: Any | None = None
+BRAIN: Any | None = None
 
 
 # Events that move money into the system. Charges include manual + payment-link
@@ -114,22 +117,36 @@ async def _route_event(event: dict) -> dict:
         amount_gbp = float(obj.get("amount") or 0) / 100.0
         if amount_gbp <= 0:
             return {"ok": True, "routed": False, "reason": "zero_amount"}
+        # Z3: self-pay filter. If billing email matches OPERATOR_EMAIL,
+        # tag this as is_self_paid=True so fitness excludes it. Prevents
+        # operator's own test purchases from inflating the £ signal.
+        customer_email = _extract_customer_email(obj)
+        is_self = _is_operator_email(customer_email)
         inserted = await BUSINESS_STORE.record_revenue(
             business_id=biz_id,
             amount_gbp=amount_gbp,
             source="stripe",
             external_id=str(obj.get("id") or event.get("id")),
-            is_self_paid=False,
+            is_self_paid=is_self,
             metadata={
                 "stripe_event_id": event.get("id"),
                 "stripe_event_type": event_type,
+                "customer_email": customer_email,
             },
         )
         logger.info(
-            "Stripe webhook → business_revenue: biz=%s amount=£%.2f inserted=%s",
-            biz_id, amount_gbp, inserted,
+            "Stripe webhook → business_revenue: biz=%s amount=£%.2f self_paid=%s inserted=%s",
+            biz_id, amount_gbp, is_self, inserted,
         )
-        return {"ok": True, "routed": True, "inserted": inserted}
+        # Z3 fulfilment: only fire delivery on the FIRST insert (avoids
+        # double-emails on Stripe webhook retries) AND skip self-paid
+        # (test charges don't need real fulfilment).
+        if inserted and not is_self and customer_email:
+            await _fire_fulfilment(
+                business_id=biz_id, customer_email=customer_email,
+                charge_id=str(obj.get("id") or event.get("id")),
+            )
+        return {"ok": True, "routed": True, "inserted": inserted, "self_paid": is_self}
 
     if event_type in _REFUND_EVENTS:
         if not biz_id:
@@ -156,6 +173,169 @@ async def _route_event(event: dict) -> dict:
 
     # Unknown event type — ack so Stripe doesn't retry forever.
     return {"ok": True, "routed": False, "reason": f"unhandled_event:{event_type}"}
+
+
+def _extract_customer_email(charge_or_pi: dict) -> str:
+    """Pull the customer email from a Stripe charge or payment_intent.
+    Returns lowercased email or empty string."""
+    billing = (charge_or_pi.get("billing_details") or {})
+    email = billing.get("email") or charge_or_pi.get("receipt_email") or ""
+    return str(email).strip().lower()
+
+
+def _is_operator_email(email: str) -> bool:
+    """True if this email matches the operator (test purchases shouldn't
+    inflate fitness). The OPERATOR_EMAIL env var overrides the default."""
+    if not email:
+        return False
+    import os
+    operator = os.environ.get("OPERATOR_EMAIL", "harrywinter06@gmail.com").strip().lower()
+    return email == operator
+
+
+async def _fire_fulfilment(
+    *, business_id: str, customer_email: str, charge_id: str,
+) -> None:
+    """Generate + email the personalised report after a confirmed payment.
+
+    Fulfilment is a platform-owned side-effect of a confirmed charge, not
+    an agent-callable skill. Pulls business genome → loads fulfilment
+    template → renders with lead's captured inputs → calls LLM → sends
+    email. Errors logged but not raised — webhook must still return 200
+    to Stripe (we'll fix delivery via operator manual replay if needed)."""
+    if BUSINESS_STORE is None or not hasattr(BUSINESS_STORE, "_pool"):
+        logger.error("BUSINESS_STORE missing or unpooled — cannot fire fulfilment")
+        return
+    if LLM_POOL is None:
+        logger.error("LLM_POOL not wired into stripe_webhook — cannot fire fulfilment")
+        return
+    pool = BUSINESS_STORE._pool
+
+    try:
+        # 1. Genome lookup
+        async with pool.acquire() as conn:
+            biz_row = await conn.fetchrow(
+                "SELECT genome FROM businesses WHERE business_id = $1",
+                business_id,
+            )
+        if biz_row is None:
+            logger.warning("Fulfilment: business %s not found, skipping", business_id)
+            return
+        genome = biz_row["genome"]
+        if isinstance(genome, str):
+            genome = json.loads(genome)
+        template_name = genome.get("fulfilment_template", "")
+        niche = genome.get("niche_question", "your query")
+
+        # 2. Lead inputs lookup
+        async with pool.acquire() as conn:
+            lead_row = await conn.fetchrow(
+                "SELECT metadata FROM business_leads "
+                "WHERE business_id = $1 AND email = $2 "
+                "ORDER BY captured_at DESC LIMIT 1",
+                business_id, customer_email,
+            )
+        inputs: dict = {}
+        if lead_row is not None:
+            md = lead_row["metadata"]
+            if isinstance(md, str):
+                md = json.loads(md)
+            if isinstance(md, dict):
+                inputs = md.get("inputs", {}) or {}
+
+        # 3. Load + render fulfilment template
+        from clawbot.fulfilment import load_template, FulfilmentTemplateError
+        try:
+            tpl = load_template(template_name)
+        except FulfilmentTemplateError as exc:
+            logger.error("Fulfilment template load failed for %s: %s", business_id, exc)
+            return
+        try:
+            prompt = tpl.render_prompt(inputs)
+        except FulfilmentTemplateError as exc:
+            logger.warning(
+                "Fulfilment template missing inputs for %s (rendering with placeholders): %s",
+                business_id, exc,
+            )
+            filled = {**inputs, **{k: "(not provided)" for k in tpl.required_inputs}}
+            prompt = tpl.render_prompt(filled)
+
+        # 4. Generate report via LLM
+        messages = [
+            {"role": "system",
+             "content": "You are an expert UK contractor accountant. Produce the personalised report exactly as the prompt specifies. Markdown formatting."},
+            {"role": "user", "content": prompt},
+        ]
+        report = await LLM_POOL.complete(messages, tier="executive", max_tokens=2000)
+
+        # 5. Email the customer. Subject discloses AI generation per charter.
+        subject = f"Your AI-generated {niche[:80]} report (charge {charge_id[:16]})"
+        body = (
+            "Hi,\n\n"
+            f"Your personalised {niche} report is below.\n"
+            f"Reference: {charge_id}\n\n"
+            "--- AI DISCLOSURE ---\n"
+            f"{tpl.ai_disclosure}\n\n"
+            "--- REPORT ---\n\n"
+            f"{report}\n\n"
+            "---\n"
+            "Questions or refund: reply to this email.\n"
+        )
+        # Email send: direct Resend call if configured, else log + skip.
+        # Avoid building a full SkillCtx since fulfilment is platform code.
+        from clawbot.config import settings
+        if settings.resend_api_key and getattr(settings, "email_domain", ""):
+            import httpx
+            from_addr = f"reports@{settings.email_domain}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {settings.resend_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": from_addr,
+                        "to": [customer_email],
+                        "subject": subject,
+                        "text": body,
+                    },
+                )
+                if resp.status_code >= 400:
+                    logger.error(
+                        "Resend send failed (%s) for biz=%s: %s",
+                        resp.status_code, business_id, resp.text[:300],
+                    )
+                else:
+                    logger.info(
+                        "Fulfilment email delivered: biz=%s to=%s",
+                        business_id, customer_email,
+                    )
+        else:
+            logger.warning(
+                "RESEND_API_KEY or EMAIL_DOMAIN unset — fulfilment for biz=%s logged "
+                "to disk but NOT emailed. Operator must replay manually.",
+                business_id,
+            )
+            # Persist the unsent report so operator can copy-paste-send
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE businesses SET metadata = metadata || $2::jsonb "
+                    "WHERE business_id = $1",
+                    business_id,
+                    json.dumps({
+                        f"unsent_fulfilment_{charge_id[:14]}": {
+                            "to": customer_email,
+                            "subject": subject,
+                            "body": body[:8000],
+                        }
+                    }),
+                )
+    except Exception as exc:
+        logger.error(
+            "Fulfilment fire-and-forget exception for biz=%s: %s",
+            business_id, exc, exc_info=True,
+        )
 
 
 def get_router():

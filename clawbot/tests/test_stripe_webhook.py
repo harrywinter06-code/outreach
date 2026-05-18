@@ -242,6 +242,46 @@ def test_webhook_endpoint_binds_request_correctly():
 
 
 @pytest.mark.asyncio
+async def test_charge_with_operator_email_tagged_as_self_paid(mock_store, monkeypatch):
+    """Z3: operator's test purchases must be tagged is_self_paid=True so
+    they don't inflate the fitness signal."""
+    from clawbot.stripe_webhook import _route_event
+    monkeypatch.setenv("OPERATOR_EMAIL", "harrywinter06@gmail.com")
+    event = {
+        "id": "evt_self", "type": "charge.succeeded",
+        "data": {"object": {
+            "id": "ch_self", "amount": 500, "currency": "gbp",
+            "billing_details": {"email": "harrywinter06@gmail.com"},
+            "metadata": {"business_id": "biz_x"},
+        }},
+    }
+    result = await _route_event(event)
+    assert result["routed"] is True
+    assert result["self_paid"] is True
+    call = mock_store.record_revenue.call_args.kwargs
+    assert call["is_self_paid"] is True
+
+
+@pytest.mark.asyncio
+async def test_charge_with_unknown_email_not_self_paid(mock_store, monkeypatch):
+    from clawbot.stripe_webhook import _route_event
+    monkeypatch.setenv("OPERATOR_EMAIL", "harrywinter06@gmail.com")
+    event = {
+        "id": "evt_real", "type": "charge.succeeded",
+        "data": {"object": {
+            "id": "ch_real", "amount": 500, "currency": "gbp",
+            "billing_details": {"email": "stranger@elsewhere.com"},
+            "metadata": {"business_id": "biz_x"},
+        }},
+    }
+    result = await _route_event(event)
+    assert result["routed"] is True
+    assert result["self_paid"] is False
+    call = mock_store.record_revenue.call_args.kwargs
+    assert call["is_self_paid"] is False
+
+
+@pytest.mark.asyncio
 async def test_route_returns_store_unavailable_when_business_store_not_wired():
     """If main.py never sets BUSINESS_STORE (misconfig), the webhook must
     fail loudly rather than silently dropping payment data."""

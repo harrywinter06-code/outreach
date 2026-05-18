@@ -18,6 +18,25 @@ from __future__ import annotations
 
 
 SEED_GENOMES: list[dict] = [
+    # Z3: IR35 is the depth-first focus. Lowest factual-error surface (the
+    # HMRC CEST framework is well-defined), clearest expert competition
+    # (£150-300 accountant fee), highest-value audience (UK contractors).
+    # The fulfilment template `ir35_quickcheck_v1` is the only one with a
+    # real prompt body wired up; council_tax/mortgage stay in the pool for
+    # later when their templates exist + IR35 has proven conversion.
+    {
+        "niche_question": "am i inside or outside ir35 for my current contract?",
+        "price_gbp": 5.0,
+        "channels": ["dev_to", "medium", "bluesky", "mastodon"],
+        "copy_voice": "plain_uk_explainer",
+        "fulfilment_template": "ir35_quickcheck_v1",
+        "target_audience": "uk_contractor_freelancer",
+        "extra": {
+            "free_tier_promise": "structured 7-question check with verdict",
+            "paid_tier_promise": "hmrc-aligned full assessment + tailored evidence checklist + next-step recommendation",
+            "data_sources": ["hmrc_cest_guidance"],
+        },
+    },
     {
         "niche_question": "what council tax band is my property in and is it correct?",
         "price_gbp": 3.0,
@@ -29,19 +48,6 @@ SEED_GENOMES: list[dict] = [
             "free_tier_promise": "instant band lookup + average for street",
             "paid_tier_promise": "personalised challenge letter draft + valuation comparison + 5-year savings estimate",
             "data_sources": ["voa_band_lookup", "land_registry_sold_prices"],
-        },
-    },
-    {
-        "niche_question": "am i inside or outside ir35 for my current contract?",
-        "price_gbp": 5.0,
-        "channels": ["dev_to", "medium", "bluesky"],
-        "copy_voice": "plain_uk_explainer",
-        "fulfilment_template": "ir35_quickcheck_v1",
-        "target_audience": "uk_contractor_freelancer",
-        "extra": {
-            "free_tier_promise": "5-question quick check with verdict",
-            "paid_tier_promise": "15-question hmrc-aligned assessment + tailored evidence checklist + verdict justification",
-            "data_sources": ["hmrc_cest_guidance"],
         },
     },
     {

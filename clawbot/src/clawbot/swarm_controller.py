@@ -165,11 +165,15 @@ class SwarmController:
         seeds: list[dict],
         policy: SwarmPolicy,
         rng: random.Random | None = None,
+        funnel_bootstrapper: Any = None,
     ) -> None:
         self._store = store
         self._seeds = seeds
         self._policy = policy
         self._rng = rng or random.Random()
+        # Z3: auto-creates Stripe artifacts + lander URL after each spawn.
+        # Optional so unit tests can omit it without a Stripe dep.
+        self._funnel = funnel_bootstrapper
         # cumulative counters for telemetry — read by swarm_status skill
         self.spawn_count = 0
         self.cull_count = 0
@@ -201,8 +205,24 @@ class SwarmController:
             if bid is not None:
                 seeded += 1
                 self.spawn_count += 1
+                await self._maybe_bootstrap_funnel(bid, seed)
                 logger.info("Bootstrap spawned business %s from seed %s", bid, seed["fulfilment_template"])
         return seeded
+
+    async def _maybe_bootstrap_funnel(self, business_id: str, genome: dict) -> None:
+        """Z3: create Stripe artifacts + persist lander URL. No-op if no
+        bootstrapper wired (e.g. in unit tests). Errors logged but not raised
+        — a spawn that succeeds in business_store but fails Stripe is still
+        a live business that can cycle and try to recover."""
+        if self._funnel is None:
+            return
+        try:
+            await self._funnel.bootstrap(business_id=business_id, genome=genome)
+        except Exception as exc:
+            logger.error(
+                "Funnel bootstrap failed for %s (business still alive): %s",
+                business_id, exc, exc_info=True,
+            )
 
     async def spawn_one(self) -> str | None:
         """If under cap, sample a genome and spawn one. Returns business_id."""
@@ -236,6 +256,7 @@ class SwarmController:
         )
         if bid is not None:
             self.spawn_count += 1
+            await self._maybe_bootstrap_funnel(bid, genome)
             logger.info(
                 "Spawned business %s (template=%s, niche=%s)",
                 bid, template_choice_id, genome.get("niche_question", "?")[:60],

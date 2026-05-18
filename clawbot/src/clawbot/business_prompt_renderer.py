@@ -206,18 +206,34 @@ def render_business_prompt(
         + ("\n".join(sig_lines) if sig_lines else "(none available)")
     )
 
-    # 5. MANDATE
+    # 5. MANDATE — Z3: traffic-to-lander, not publish-for-its-own-sake.
+    lander_url = md.get("lander_url", "")
+    payment_link = md.get("payment_link_url", "")
     artifact_list = ", ".join(ARTIFACT_ACTIONS[:8]) + ", ..."
     response_example = json.dumps({
         "action": "dev_to_publish",
-        "title": "Council Tax Bands Explained — Free 2-Minute Check",
-        "body_markdown": "...",
+        "title": "Quick IR35 self-check — outside or inside?",
+        "body_markdown": (
+            f"... article body ... \\n\\nFull personalised check at {lander_url or '<your lander>'} "
+            f"— £{g.get('price_gbp', '?')} for the AI-generated report."
+        ),
         "business_id": business.business_id,
     })
+    funnel_section = ""
+    if lander_url:
+        funnel_section = (
+            "\nYour conversion funnel (already set up — link to it):\n"
+            f"  lander:        {lander_url}\n"
+            f"  payment link:  {payment_link or '(not yet created)'}\n"
+            "Every artifact you publish MUST include the lander URL with copy\n"
+            "explaining what the customer gets (free taster + paid report).\n"
+            "Articles that don't drive traffic to the lander are wasted cycles.\n"
+        )
     sections.append(
         "=== MANDATE ===\n"
-        "Produce ONE concrete artifact this cycle. Examples of artifact-producing\n"
-        f"actions: {artifact_list}\n\n"
+        "Produce ONE concrete artifact this cycle that drives traffic to your\n"
+        f"funnel. Artifact-producing actions: {artifact_list}\n"
+        + funnel_section + "\n"
         "Rules:\n"
         "- Respond with a single JSON object containing `action` and required params.\n"
         "- Include `\"business_id\": \"<your id>\"` so the action attributes correctly.\n"

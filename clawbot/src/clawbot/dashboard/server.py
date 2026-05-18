@@ -437,6 +437,9 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
     # Swarm Z2.5c — Stripe webhook for business-attributed revenue capture.
     from clawbot.stripe_webhook import get_router as get_stripe_router
     app.include_router(get_stripe_router())
+    # Z3 — per-business lander page + email/quiz capture
+    from clawbot.business_lander import get_router as get_lander_router
+    app.include_router(get_lander_router())
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:

@@ -139,6 +139,7 @@ async def main() -> None:
     # against the £-fitness signal. Loops are wired into the scheduler.
     from clawbot.swarm_controller import SwarmController, SwarmPolicy
     from clawbot.swarm_seeds import get_seed_genomes
+    from clawbot.business_funnel import FunnelBootstrapper
     swarm_policy = SwarmPolicy(
         max_active=settings.max_active_businesses,
         seed_budget_gbp=settings.business_seed_budget_gbp,
@@ -147,8 +148,17 @@ async def main() -> None:
         hard_kill_days=settings.swarm_hard_kill_days,
         template_sample_weight=settings.swarm_template_sample_weight,
     )
+    # Z3: every spawn now auto-creates Stripe Product+Price+PaymentLink and
+    # persists lander URL. Lander base URL = https://clawbot.veriflowlabs.co.uk
+    # (the swarm endpoint Caddy already serves with Let's Encrypt).
+    funnel_bootstrapper = FunnelBootstrapper(
+        store=business_store,
+        stripe_secret_key=settings.stripe_secret_key,
+        lander_base_url=getattr(settings, "lander_base_url", "") or "https://clawbot.veriflowlabs.co.uk",
+    )
     swarm_controller = SwarmController(
         store=business_store, seeds=get_seed_genomes(), policy=swarm_policy,
+        funnel_bootstrapper=funnel_bootstrapper,
     )
 
     # Swarm Phase Z2.5b — per-business LLM cycle runner.
@@ -160,8 +170,15 @@ async def main() -> None:
 
     # Swarm Phase Z2.5c — wire the BusinessStore into the Stripe webhook
     # module so /webhook/stripe can route incoming payments to record_revenue.
-    from clawbot import stripe_webhook
+    # Z3: also wire llm_pool / bus / brain so the webhook can fire the
+    # fulfilment skill on charge.succeeded.
+    from clawbot import stripe_webhook, business_lander
     stripe_webhook.BUSINESS_STORE = business_store
+    stripe_webhook.LLM_POOL = pool
+    stripe_webhook.BUS = bus
+    stripe_webhook.BRAIN = brain
+    # Z3: lander route reads businesses + writes business_leads.
+    business_lander.DB_POOL = db.pool
 
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
