@@ -22,6 +22,9 @@ EXPECTED_BUILTINS = {
     "worker_spawn", "worker_fire", "skill_request",
     "account_create", "account_get", "account_list", "account_mark_zombie",
     "stripe_issue_card", "stripe_freeze_card", "stripe_list_authorizations",
+    # Phase H — Task 36 support pack
+    "support_send_email_reply", "support_assign_ticket", "support_canned_response",
+    "chat_widget_respond_live", "calendar_book_slot", "survey_send_nps",
 }
 
 

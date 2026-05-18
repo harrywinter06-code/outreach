@@ -145,3 +145,19 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
             )
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    assigned_to TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tickets_status_updated "
+                "ON tickets (status, updated_at DESC)"
+            )
