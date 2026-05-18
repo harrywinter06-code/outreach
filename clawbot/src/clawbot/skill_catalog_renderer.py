@@ -47,7 +47,9 @@ def _effective_roles(entry: SkillCatalogEntry) -> list[str]:
     return []  # empty list = universal
 
 
-def render_for_role(role: str, entries: list[SkillCatalogEntry]) -> str:
+def render_for_role(
+    role: str, entries: list[SkillCatalogEntry], *, compact: bool = False
+) -> str:
     """Render a prompt-friendly catalog block for the given role.
 
     Format:
@@ -64,6 +66,10 @@ def render_for_role(role: str, entries: list[SkillCatalogEntry]) -> str:
     )
     if not visible:
         return f"Available skills for {role}: (none)"
+
+    if compact:
+        names = ", ".join(e.name for e in visible)
+        return f'Available skills (output as JSON {{"action": "<name>", ...params}}): {names}'
 
     lines = ['Available skills (invoke via {"action": "<skill_name>", ...params}):']
     for e in visible:

@@ -64,8 +64,9 @@ async def test_executive_cycle_prompt_contains_skill_catalog(tmp_path):
     pool.complete.assert_called_once()
     prompt_text = pool.complete.call_args.args[0][1]["content"]
     assert "fs_write" in prompt_text
-    assert "Write to workspace" in prompt_text
-    assert '"action": "<skill_name>"' in prompt_text
+    # Compact mode: descriptions are omitted; only skill names appear in cycle prompts.
+    assert "Write to workspace" not in prompt_text
+    assert '"action": "<name>"' in prompt_text
 
 
 @pytest.mark.asyncio
@@ -86,7 +87,8 @@ async def test_lieutenant_cycle_prompt_contains_skill_catalog(tmp_path):
     pool.complete.assert_called_once()
     prompt_text = pool.complete.call_args.args[0][1]["content"]
     assert "stripe_issue_card" in prompt_text
-    assert "cardholder_id" in prompt_text
+    # Compact mode: params are omitted; only skill names appear in cycle prompts.
+    assert "cardholder_id" not in prompt_text
 
 
 @pytest.mark.asyncio
