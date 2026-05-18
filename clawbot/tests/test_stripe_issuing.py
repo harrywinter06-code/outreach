@@ -71,7 +71,7 @@ def test_live_freeze_card_cancels_via_update():
         stripe_mod.issuing.Card.modify.return_value = fake_card
         result = asyncio.run(payments.freeze_card(card_id="ic_x"))
 
-    stripe_mod.issuing.Card.modify.assert_called_once_with("ic_x", status="canceled")
+    stripe_mod.issuing.Card.modify.assert_called_once_with("ic_x", status="canceled", api_key="sk_test_123")
     assert result["status"] == "canceled"
 
 
@@ -88,7 +88,7 @@ def test_live_list_authorizations_returns_page():
         stripe_mod.issuing.Authorization.list.return_value = fake_list
         result = asyncio.run(payments.list_authorizations(card_id="ic_x", limit=10))
 
-    stripe_mod.issuing.Authorization.list.assert_called_once_with(card="ic_x", limit=10)
+    stripe_mod.issuing.Authorization.list.assert_called_once_with(card="ic_x", limit=10, api_key="sk_test_123")
     assert len(result) == 2
     assert result[0]["id"] == "iauth_1"
 
