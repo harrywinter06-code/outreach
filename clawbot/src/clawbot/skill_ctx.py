@@ -689,12 +689,62 @@ class _LivePayments:
     """Stripe wrapper. Synchronous SDK calls are run on the default executor
     via asyncio.to_thread to avoid blocking the event loop."""
 
-    def __init__(self, secret_key: str) -> None:
+    def __init__(
+        self, secret_key: str,
+        *,
+        capital_ledger: Any = None,
+        live_mode_enabled: bool = False,
+        capital_daily_cap_gbp: Any = None,
+        capital_weekly_cap_gbp: Any = None,
+        capital_freeze: bool = False,
+    ) -> None:
+        from decimal import Decimal
         if not secret_key:
             raise ValueError("STRIPE_SECRET_KEY not set — _LivePayments cannot operate")
         if stripe is None:
             raise RuntimeError("stripe SDK not installed")
         stripe.api_key = secret_key
+        self._is_live_key = secret_key.startswith("sk_live_")
+        self._capital_ledger = capital_ledger
+        self._live_mode_enabled = live_mode_enabled
+        self._capital_daily_cap_gbp = Decimal(str(capital_daily_cap_gbp or 0))
+        self._capital_weekly_cap_gbp = Decimal(str(capital_weekly_cap_gbp or 0))
+        self._capital_freeze = capital_freeze
+
+    async def _enforce_capital_gates(
+        self, *, prospective_amount_gbp: "Decimal", agent_id: str,
+    ) -> bool:
+        """Returns True if the prospective spend is allowed. Raises RuntimeError
+        with a specific cap-name on refusal. Returns True for test-mode (sk_test_)
+        keys regardless of gates — test mode is a free playground."""
+        from decimal import Decimal
+        if not self._is_live_key:
+            return True
+        if self._capital_freeze:
+            raise RuntimeError("capital_freeze_active — operator has halted all spending")
+        if not self._live_mode_enabled:
+            raise RuntimeError("live_mode_not_enabled — operator has not graduated to live")
+        if self._capital_daily_cap_gbp <= 0 or self._capital_weekly_cap_gbp <= 0:
+            raise RuntimeError("capital_caps_not_set — daily and weekly caps must both be > 0 for live spend")
+        if self._capital_ledger is None:
+            raise RuntimeError("capital_ledger_not_wired — live mode requires ledger for cap enforcement")
+        daily_spent = await self._capital_ledger.current_period_total_gbp(
+            period_hours=24, live_only=True,
+        )
+        if daily_spent + prospective_amount_gbp > self._capital_daily_cap_gbp:
+            raise RuntimeError(
+                f"capital_cap_exceeded — daily: {daily_spent} + {prospective_amount_gbp} "
+                f"> {self._capital_daily_cap_gbp}"
+            )
+        weekly_spent = await self._capital_ledger.current_period_total_gbp(
+            period_hours=168, live_only=True,
+        )
+        if weekly_spent + prospective_amount_gbp > self._capital_weekly_cap_gbp:
+            raise RuntimeError(
+                f"capital_cap_exceeded — weekly: {weekly_spent} + {prospective_amount_gbp} "
+                f"> {self._capital_weekly_cap_gbp}"
+            )
+        return True
 
     async def create_product(self, *, name: str, description: str) -> dict[str, Any]:
         prod = await asyncio.to_thread(stripe.Product.create, name=name, description=description)
@@ -728,6 +778,11 @@ class _LivePayments:
     async def issue_card(
         self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str,
     ) -> dict[str, Any]:
+        from decimal import Decimal
+        prospective_gbp = Decimal(str(daily_limit_usd))
+        await self._enforce_capital_gates(
+            prospective_amount_gbp=prospective_gbp, agent_id=agent_id,
+        )
         amount_cents = daily_limit_usd * 100
         card = await asyncio.to_thread(
             stripe.issuing.Card.create,  # type: ignore[union-attr]
@@ -742,10 +797,22 @@ class _LivePayments:
             metadata={"agent_id": agent_id},
         )
         result = card.to_dict()
-        # Defensive: strip full PAN/CVC fields in case a future caller adds
-        # ?expand=number,cvc. Last4 / expiry are safe to return.
+        # Strip sensitive fields defensively
         for sensitive in ("number", "cvc"):
             result.pop(sensitive, None)
+        # Log to ledger AFTER Stripe success but BEFORE returning
+        if self._capital_ledger is not None:
+            try:
+                await self._capital_ledger.record(
+                    agent_id=agent_id,
+                    action_type="card_issued",
+                    amount_gbp=prospective_gbp,
+                    is_live_mode=self._is_live_key,
+                    stripe_object_id=result.get("id"),
+                    metadata={"cardholder_id": cardholder_id, "daily_limit_usd": daily_limit_usd},
+                )
+            except Exception:
+                pass  # ledger failure must not break the response
         return result
 
     async def freeze_card(self, *, card_id: str) -> dict[str, Any]:
@@ -1688,6 +1755,10 @@ def make_live_ctx(
     workspace_root: str,
     fs_allowed_roots: list[str] | None = None,
     stripe_secret_key: str = "",
+    stripe_live_mode_enabled: bool = False,
+    capital_daily_cap_gbp: float = 0.0,
+    capital_weekly_cap_gbp: float = 0.0,
+    capital_freeze: bool = False,
     x_bearer: str = "",
     linkedin_token: str = "",
     reddit_creds: dict[str, str] | None = None,
@@ -1723,8 +1794,23 @@ def make_live_ctx(
     src/clawbot/ via fs — those edits go through coder.py.
     """
     extra_roots = fs_allowed_roots or []
+    capital_ledger = None
+    if db_pool is not None:
+        try:
+            from clawbot.capital_ledger import CapitalLedger
+            capital_ledger = CapitalLedger(db_pool)
+        except Exception:
+            capital_ledger = None
+
     payments: PaymentsClient = (
-        _LivePayments(stripe_secret_key) if stripe_secret_key else _NoopPayments()
+        _LivePayments(
+            stripe_secret_key,
+            capital_ledger=capital_ledger,
+            live_mode_enabled=stripe_live_mode_enabled,
+            capital_daily_cap_gbp=capital_daily_cap_gbp,
+            capital_weekly_cap_gbp=capital_weekly_cap_gbp,
+            capital_freeze=capital_freeze,
+        ) if stripe_secret_key else _NoopPayments()
     )
     social: SocialClient = (
         _LiveSocial(x_bearer, linkedin_token, reddit_creds)
