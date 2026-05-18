@@ -168,10 +168,16 @@ async def main() -> None:
         stall_threshold=settings.business_artifact_stall_threshold,
     )
 
+    causal_store = CausalStore(pool=db.pool)
+    task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
+    await _register_executives(registry)
+
+    brain = CompanyBrain(pool=db.pool)
+
     # Swarm Phase Z2.5c — wire the BusinessStore into the Stripe webhook
     # module so /webhook/stripe can route incoming payments to record_revenue.
     # Z3: also wire llm_pool / bus / brain so the webhook can fire the
-    # fulfilment skill on charge.succeeded.
+    # fulfilment skill on charge.succeeded. Must come AFTER brain init.
     from clawbot import stripe_webhook, business_lander
     stripe_webhook.BUSINESS_STORE = business_store
     stripe_webhook.LLM_POOL = pool
@@ -179,12 +185,6 @@ async def main() -> None:
     stripe_webhook.BRAIN = brain
     # Z3: lander route reads businesses + writes business_leads.
     business_lander.DB_POOL = db.pool
-
-    causal_store = CausalStore(pool=db.pool)
-    task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
-    await _register_executives(registry)
-
-    brain = CompanyBrain(pool=db.pool)
 
     from clawbot.skill_registry import init_skill_system
     from clawbot.skill_forge import SkillForge
