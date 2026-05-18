@@ -19,6 +19,7 @@ from clawbot.skill_ctx import (
     _NoopEmail,
     _NoopLlm,
     _NoopLog,
+    _NoopMedia,
     _NoopOperator,
     _NoopPayments,
     _NoopRevenue,
@@ -103,6 +104,7 @@ def make_shadow_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         search=_NoopSearch(),
         accounts=_NoopAccounts(),
         revenue=_NoopRevenue(),
+        media=_NoopMedia(),
         caller_id=caller_id,
         budget_usd=budget_usd,
     )

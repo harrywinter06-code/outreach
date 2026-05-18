@@ -43,6 +43,23 @@ EXPECTED_BUILTINS = {
     "email_send_cold", "email_send_followup_sequence",
     "email_classify_reply", "email_suppress",
     "crm_upsert_lead", "crm_advance_stage", "lead_score",
+    # Phase H — Session B (research/experiments/browser/media/SEO)
+    "experiment_create", "experiment_record_observation",
+    "experiment_compute_significance", "bandit_allocate_budget",
+    "experiment_kill_underperformer", "experiment_summarize",
+    "browser_signup", "browser_form_fill", "browser_extract_structured",
+    "browser_solve_captcha", "browser_save_session", "browser_load_session",
+    "browser_navigate_and_record", "browser_screenshot_element",
+    "gsc_query", "bing_webmaster_query", "serp_check", "keyword_research",
+    "backlink_audit", "sitemap_generate", "sitemap_submit",
+    "schema_org_generate", "lighthouse_audit", "robots_txt_check",
+    "web_deep_research", "web_diff_page", "news_monitor_topic",
+    "social_listen_brand", "competitor_pricing_scrape", "github_trending",
+    "arxiv_search", "arxiv_summarize", "reviews_scrape_g2",
+    "glassdoor_scrape_company", "crunchbase_lookup",
+    "video_generate", "video_subtitle", "video_dub",
+    "podcast_generate", "logo_generate", "favicon_generate",
+    "image_remove_bg", "image_upscale", "screenshot_annotate",
 }
 
 
