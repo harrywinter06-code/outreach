@@ -281,6 +281,7 @@ class Scheduler:
         causal_store: "CausalStore | None" = None,
         task_store: "TaskStore | None" = None,
         db_pool=None,  # asyncpg.Pool | None; required for plan injection
+        swarm_controller=None,  # SwarmController | None; required for swarm loops
     ) -> None:
         self._pool = pool
         self._bus = bus
@@ -293,6 +294,7 @@ class Scheduler:
         self._causal_store = causal_store
         self._task_store = task_store
         self._db_pool = db_pool
+        self._swarm = swarm_controller
         self._agent_tasks: dict[str, asyncio.Task] = {}
         self._executive_cycle_counter: int = 0
         self._latest_resolution: dict | None = None
@@ -388,6 +390,17 @@ class Scheduler:
             self._run_charge_importer_loop(),
             name="charge-importer",
         ))
+        # Swarm Phase Z2 — spawn/cull loops. Bootstrap fires once on first
+        # tick of spawn loop. Both loops are no-ops if swarm wasn't wired.
+        if self._swarm is not None:
+            tasks.append(_ct(
+                self._swarm.run_spawn_loop(settings.swarm_spawn_interval_s),
+                name="swarm-spawn",
+            ))
+            tasks.append(_ct(
+                self._swarm.run_cull_loop(settings.swarm_cull_interval_s),
+                name="swarm-cull",
+            ))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:
             task.cancel()

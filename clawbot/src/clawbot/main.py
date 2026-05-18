@@ -135,6 +135,22 @@ async def main() -> None:
         initial_active, settings.max_active_businesses,
     )
 
+    # Swarm Phase Z2 — SwarmController spawns / culls / graduates businesses
+    # against the £-fitness signal. Loops are wired into the scheduler.
+    from clawbot.swarm_controller import SwarmController, SwarmPolicy
+    from clawbot.swarm_seeds import get_seed_genomes
+    swarm_policy = SwarmPolicy(
+        max_active=settings.max_active_businesses,
+        seed_budget_gbp=settings.business_seed_budget_gbp,
+        graduation_revenue_gbp=settings.business_template_graduation_gbp,
+        probation_days=settings.swarm_probation_days,
+        hard_kill_days=settings.swarm_hard_kill_days,
+        template_sample_weight=settings.swarm_template_sample_weight,
+    )
+    swarm_controller = SwarmController(
+        store=business_store, seeds=get_seed_genomes(), policy=swarm_policy,
+    )
+
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)
@@ -183,6 +199,7 @@ async def main() -> None:
         registry=registry, brain=brain, homeostasis=homeostasis,
         causal_store=causal_store, task_store=task_store,
         db_pool=db.pool,
+        swarm_controller=swarm_controller,
     )
     try:
         await asyncio.gather(

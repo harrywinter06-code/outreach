@@ -126,6 +126,19 @@ class Settings(BaseSettings):
     # pool once it cumulatively earns this much. Templates seed future spawns.
     business_template_graduation_gbp: float = Field(default=50.0, ge=1.0, le=10_000.0)
 
+    # Swarm Phase Z2 — SwarmController loop intervals + kill thresholds.
+    # Spawn at ~5/week (33h interval). Cull every 6h — needs higher cadence
+    # than spawn so dying businesses free slots before the next spawn tick.
+    swarm_spawn_interval_s: float = Field(default=33 * 3600, ge=60.0, le=604_800.0)
+    swarm_cull_interval_s: float = Field(default=6 * 3600, ge=60.0, le=86_400.0)
+    # Emergency stop — halts spawn loop without container restart.
+    swarm_freeze: bool = False
+    # Probation: zero £ past this age → kill. Hard kill: <£5 past this age.
+    swarm_probation_days: float = Field(default=14.0, ge=1.0, le=365.0)
+    swarm_hard_kill_days: float = Field(default=21.0, ge=1.0, le=365.0)
+    # 0.7 = 70% of spawns sampled from templates (when available), 30% fresh seeds.
+    swarm_template_sample_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+
     # Capital integration — operator-gated graduation from Stripe test mode.
     # Until stripe_live_mode_enabled is True AND both caps > 0, _LivePayments
     # refuses any live-mode spend. Test-mode keys bypass these gates entirely.

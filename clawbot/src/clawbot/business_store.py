@@ -283,11 +283,16 @@ class BusinessStore:
                 )
                 if inserted is None:
                     return False
-                await conn.execute(
-                    "UPDATE businesses SET revenue_total_gbp = revenue_total_gbp + $2 "
-                    "WHERE business_id = $1",
-                    business_id, signed,
-                )
+                # Z2 red-team: self-paid revenue must NOT inflate the rolled-up
+                # `businesses.revenue_total_gbp` because that column is what
+                # `compute_business_fitness` reads. Tagging the event isn't
+                # enough — fitness must see only real-market revenue.
+                if not is_self_paid:
+                    await conn.execute(
+                        "UPDATE businesses SET revenue_total_gbp = revenue_total_gbp + $2 "
+                        "WHERE business_id = $1",
+                        business_id, signed,
+                    )
                 if not is_refund and not is_self_paid:
                     await conn.execute(
                         "UPDATE business_templates SET times_produced_revenue = "

@@ -242,6 +242,35 @@ async def test_spawn_from_template_increments_sampled_counter(pool):
 
 
 @pytest.mark.asyncio
+async def test_self_paid_revenue_does_not_inflate_business_revenue_total(pool):
+    """Z2 red-team: self-paid revenue tagging on the events table isn't
+    enough — the rolled-up `businesses.revenue_total_gbp` is what fitness
+    reads, so it must also exclude self-paid."""
+    from clawbot.business_store import BusinessStore
+    await _wipe(pool)
+    store = BusinessStore(pool, max_active=4)
+    bid = await store.spawn_business(
+        name="test_z1_sp", niche="x", genome=GENOME, budget_gbp=1.0,
+    )
+    assert bid
+    await store.record_revenue(
+        business_id=bid, amount_gbp=20.0, source="test", external_id="sp_1",
+        is_self_paid=True,
+    )
+    biz = await store.get_business(bid)
+    assert biz and biz.revenue_total_gbp == 0.0, (
+        "self-paid revenue must NOT inflate revenue_total_gbp — fitness reads this column"
+    )
+    # Real revenue still counts
+    await store.record_revenue(
+        business_id=bid, amount_gbp=7.0, source="test", external_id="real_1",
+    )
+    biz = await store.get_business(bid)
+    assert biz and biz.revenue_total_gbp == 7.0
+    await _wipe(pool)
+
+
+@pytest.mark.asyncio
 async def test_self_paid_revenue_is_flagged_and_does_not_bump_template_counter(pool):
     """Red-team #3+#4: self-paid revenue tracked separately from real customer
     revenue; template counter only bumps for genuine market revenue."""
