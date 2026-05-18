@@ -138,6 +138,40 @@ class AccountsClient(Protocol):
     async def mark_zombie(self, *, service: str, email: str, reason: str) -> dict[str, Any]: ...
 
 
+class RevenueClient(Protocol):
+    """Multi-provider revenue surface: Gumroad reads, PayPal orders+transactions,
+    Coinbase Commerce charges, Stripe subscriptions.
+
+    Each provider section degrades to stub data when its credentials are absent —
+    skills can call methods without first probing for config, and a missing key
+    surfaces as a clearly-stubbed return rather than a raised exception."""
+
+    # Gumroad
+    async def gumroad_list_products(self) -> list[dict[str, Any]]: ...
+    async def gumroad_sales_last_7d_gbp(self) -> float: ...
+    async def gumroad_sales_today_gbp(self) -> float: ...
+    async def gumroad_get_sale(self, *, sale_id: str) -> dict[str, Any]: ...
+    # PayPal
+    async def paypal_create_order(
+        self, *, amount_gbp: float, return_url: str, cancel_url: str,
+    ) -> dict[str, Any]: ...
+    async def paypal_capture_order(self, *, order_id: str) -> dict[str, Any]: ...
+    async def paypal_list_transactions(
+        self, *, start_date: str, end_date: str,
+    ) -> list[dict[str, Any]]: ...
+    async def paypal_today_gbp(self) -> float: ...
+    # Crypto via Coinbase Commerce
+    async def crypto_generate_receive_address(
+        self, *, amount_gbp: float, description: str,
+    ) -> dict[str, Any]: ...
+    async def crypto_check_balance(self, *, charge_id: str) -> dict[str, Any]: ...
+    # Stripe subscriptions
+    async def subscription_create(
+        self, *, customer_id: str, price_id: str,
+    ) -> dict[str, Any]: ...
+    async def subscription_cancel(self, *, subscription_id: str) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SkillCtx:
     http: HttpClient
@@ -156,6 +190,7 @@ class SkillCtx:
     email: EmailClient
     search: SearchClient
     accounts: AccountsClient
+    revenue: RevenueClient
     caller_id: str
     budget_usd: float
 
@@ -313,6 +348,55 @@ class _NoopAccounts:
         return {"service": service, "email": email, "status": "zombie", "reason": reason}
 
 
+class _NoopRevenue:
+    async def gumroad_list_products(self) -> list[dict[str, Any]]:
+        return []
+
+    async def gumroad_sales_last_7d_gbp(self) -> float:
+        return 0.0
+
+    async def gumroad_sales_today_gbp(self) -> float:
+        return 0.0
+
+    async def gumroad_get_sale(self, *, sale_id: str) -> dict[str, Any]:
+        return {"sale_id": sale_id, "found": False}
+
+    async def paypal_create_order(
+        self, *, amount_gbp: float, return_url: str, cancel_url: str,
+    ) -> dict[str, Any]:
+        return {"id": "ORDER_NOOP", "status": "CREATED", "amount_gbp": amount_gbp,
+                "approve_url": ""}
+
+    async def paypal_capture_order(self, *, order_id: str) -> dict[str, Any]:
+        return {"id": order_id, "status": "COMPLETED", "amount_gbp": 0.0}
+
+    async def paypal_list_transactions(
+        self, *, start_date: str, end_date: str,
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def paypal_today_gbp(self) -> float:
+        return 0.0
+
+    async def crypto_generate_receive_address(
+        self, *, amount_gbp: float, description: str,
+    ) -> dict[str, Any]:
+        return {"charge_id": "NOOP", "address": "", "currency": "BTC",
+                "amount_gbp": amount_gbp, "hosted_url": ""}
+
+    async def crypto_check_balance(self, *, charge_id: str) -> dict[str, Any]:
+        return {"charge_id": charge_id, "status": "NEW", "paid_amount_gbp": 0.0}
+
+    async def subscription_create(
+        self, *, customer_id: str, price_id: str,
+    ) -> dict[str, Any]:
+        return {"id": "sub_noop_abc", "customer": customer_id,
+                "status": "active", "price_id": price_id}
+
+    async def subscription_cancel(self, *, subscription_id: str) -> dict[str, Any]:
+        return {"id": subscription_id, "status": "canceled"}
+
+
 def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
@@ -320,6 +404,7 @@ def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         bus=_NoopBus(), log=_NoopLog(), browser=_NoopBrowser(), payments=_NoopPayments(),
         social=_NoopSocial(), email=_NoopEmail(), search=_NoopSearch(),
         accounts=_NoopAccounts(),
+        revenue=_NoopRevenue(),
         caller_id=caller_id, budget_usd=budget_usd,
     )
 
@@ -964,6 +1049,311 @@ class _LiveAccounts:
             return None
 
 
+class _LiveRevenue:
+    """Multi-provider revenue surface backing _NoopRevenue's stub methods.
+
+    Each provider is independently optional. If only GUMROAD_API_KEY is set,
+    Gumroad methods work and the rest return stub data. The aggregate-today
+    skill composes both ctx.payments (for Stripe charges) and ctx.revenue
+    (for Gumroad+PayPal), so partial config still yields useful totals."""
+
+    PAYPAL_LIVE = "https://api-m.paypal.com"
+    PAYPAL_SANDBOX = "https://api-m.sandbox.paypal.com"
+    COINBASE_API = "https://api.commerce.coinbase.com"
+    COINBASE_API_VERSION = "2018-03-22"
+
+    def __init__(
+        self,
+        *,
+        gumroad_api_key: str = "",
+        paypal_client_id: str = "",
+        paypal_client_secret: str = "",
+        paypal_environment: str = "live",
+        coinbase_commerce_api_key: str = "",
+        stripe_secret_key: str = "",
+    ) -> None:
+        self._gumroad_key = gumroad_api_key
+        self._paypal_id = paypal_client_id
+        self._paypal_secret = paypal_client_secret
+        self._paypal_base = (
+            self.PAYPAL_SANDBOX if paypal_environment == "sandbox" else self.PAYPAL_LIVE
+        )
+        self._coinbase_key = coinbase_commerce_api_key
+        self._stripe_key = stripe_secret_key
+        self._timeout = 20.0
+        self._paypal_token: str = ""
+        self._paypal_token_expiry: float = 0.0
+        if stripe_secret_key and stripe is not None:
+            stripe.api_key = stripe_secret_key
+
+    # -- Gumroad ---------------------------------------------------------------
+
+    def _gumroad(self) -> Any:
+        from clawbot.gumroad import GumroadClient
+        return GumroadClient(self._gumroad_key)
+
+    async def gumroad_list_products(self) -> list[dict[str, Any]]:
+        if not self._gumroad_key:
+            return []
+        products = await self._gumroad().list_products()
+        return [
+            {"id": p.id, "name": p.name, "price_gbp": p.price_gbp,
+             "url": p.url, "currency": p.currency}
+            for p in products
+        ]
+
+    async def gumroad_sales_last_7d_gbp(self) -> float:
+        if not self._gumroad_key:
+            return 0.0
+        return await self._gumroad().sales_last_7_days_gbp()
+
+    async def gumroad_sales_today_gbp(self) -> float:
+        if not self._gumroad_key:
+            return 0.0
+        from datetime import datetime, timedelta, UTC
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        # sales(after=...) filters by YYYY-MM-DD — pass yesterday so today's
+        # sales are returned (boundary inclusivity differs by Gumroad endpoint).
+        sales = await self._gumroad().sales(after=today_start - timedelta(days=1))
+        return sum(s.price_gbp for s in sales if s.created_at >= today_start)
+
+    async def gumroad_get_sale(self, *, sale_id: str) -> dict[str, Any]:
+        if not self._gumroad_key:
+            return {"sale_id": sale_id, "found": False}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.get(
+                f"https://api.gumroad.com/v2/sales/{sale_id}",
+                params={"access_token": self._gumroad_key},
+            )
+        if r.status_code != 200:
+            return {"sale_id": sale_id, "found": False, "status": r.status_code}
+        body = r.json()
+        sale = body.get("sale", {})
+        return {
+            "sale_id": sale_id, "found": bool(sale),
+            "product_id": sale.get("product_id", ""),
+            "price_gbp": float(sale.get("price", 0)) / 100.0,
+            "email": sale.get("email", ""),
+            "created_at": sale.get("created_at", ""),
+        }
+
+    # -- PayPal ----------------------------------------------------------------
+
+    async def _paypal_oauth_token(self) -> str:
+        from datetime import datetime, UTC
+        now = datetime.now(UTC).timestamp()
+        if self._paypal_token and now < self._paypal_token_expiry - 30:
+            return self._paypal_token
+        if not (self._paypal_id and self._paypal_secret):
+            return ""
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                f"{self._paypal_base}/v1/oauth2/token",
+                auth=(self._paypal_id, self._paypal_secret),
+                data={"grant_type": "client_credentials"},
+                headers={"Accept": "application/json"},
+            )
+            r.raise_for_status()
+        body = r.json()
+        self._paypal_token = body.get("access_token", "")
+        self._paypal_token_expiry = now + float(body.get("expires_in", 0))
+        return self._paypal_token
+
+    async def paypal_create_order(
+        self, *, amount_gbp: float, return_url: str, cancel_url: str,
+    ) -> dict[str, Any]:
+        token = await self._paypal_oauth_token()
+        if not token:
+            return {"id": "", "status": "no_creds", "amount_gbp": amount_gbp,
+                    "approve_url": ""}
+        payload = {
+            "intent": "CAPTURE",
+            "purchase_units": [{
+                "amount": {"currency_code": "GBP", "value": f"{amount_gbp:.2f}"},
+            }],
+            "application_context": {
+                "return_url": return_url, "cancel_url": cancel_url,
+            },
+        }
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                f"{self._paypal_base}/v2/checkout/orders",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+            )
+            r.raise_for_status()
+        body = r.json()
+        approve_url = ""
+        for link in body.get("links", []):
+            if link.get("rel") == "approve":
+                approve_url = link.get("href", "")
+                break
+        return {"id": body.get("id", ""), "status": body.get("status", ""),
+                "amount_gbp": amount_gbp, "approve_url": approve_url}
+
+    async def paypal_capture_order(self, *, order_id: str) -> dict[str, Any]:
+        token = await self._paypal_oauth_token()
+        if not token:
+            return {"id": order_id, "status": "no_creds", "amount_gbp": 0.0}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                f"{self._paypal_base}/v2/checkout/orders/{order_id}/capture",
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+            )
+            r.raise_for_status()
+        body = r.json()
+        captures = (
+            body.get("purchase_units", [{}])[0]
+                .get("payments", {}).get("captures", [{}])
+        )
+        first = captures[0] if captures else {}
+        amount_str = first.get("amount", {}).get("value", "0")
+        try:
+            amount_gbp = float(amount_str)
+        except (TypeError, ValueError):
+            amount_gbp = 0.0
+        return {"id": body.get("id", order_id), "status": body.get("status", ""),
+                "amount_gbp": amount_gbp}
+
+    async def paypal_list_transactions(
+        self, *, start_date: str, end_date: str,
+    ) -> list[dict[str, Any]]:
+        token = await self._paypal_oauth_token()
+        if not token:
+            return []
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.get(
+                f"{self._paypal_base}/v1/reporting/transactions",
+                params={"start_date": start_date, "end_date": end_date,
+                        "fields": "transaction_info", "page_size": 100},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            r.raise_for_status()
+        body = r.json()
+        out: list[dict[str, Any]] = []
+        for entry in body.get("transaction_details", []):
+            info = entry.get("transaction_info", {})
+            amount = info.get("transaction_amount", {})
+            try:
+                value = float(amount.get("value", 0))
+            except (TypeError, ValueError):
+                value = 0.0
+            out.append({
+                "id": info.get("transaction_id", ""),
+                "amount": value,
+                "currency": amount.get("currency_code", ""),
+                "status": info.get("transaction_status", ""),
+                "date": info.get("transaction_initiation_date", ""),
+            })
+        return out
+
+    async def paypal_today_gbp(self) -> float:
+        from datetime import datetime, timedelta, UTC
+        now = datetime.now(UTC)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # PayPal API requires ISO 8601 with timezone; end_date inclusive.
+        txns = await self.paypal_list_transactions(
+            start_date=start.strftime("%Y-%m-%dT%H:%M:%S-0000"),
+            end_date=(now + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S-0000"),
+        )
+        return sum(
+            t["amount"] for t in txns
+            if t.get("currency") == "GBP" and t.get("amount", 0) > 0
+        )
+
+    # -- Crypto (Coinbase Commerce) -------------------------------------------
+
+    async def crypto_generate_receive_address(
+        self, *, amount_gbp: float, description: str,
+    ) -> dict[str, Any]:
+        if not self._coinbase_key:
+            return {"charge_id": "", "address": "", "currency": "BTC",
+                    "amount_gbp": amount_gbp, "hosted_url": ""}
+        payload = {
+            "name": description[:100] or "Payment",
+            "description": description[:200],
+            "pricing_type": "fixed_price",
+            "local_price": {"amount": f"{amount_gbp:.2f}", "currency": "GBP"},
+        }
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.post(
+                f"{self.COINBASE_API}/charges",
+                json=payload,
+                headers={
+                    "X-CC-Api-Key": self._coinbase_key,
+                    "X-CC-Version": self.COINBASE_API_VERSION,
+                    "Content-Type": "application/json",
+                },
+            )
+            r.raise_for_status()
+        body = r.json().get("data", {})
+        addresses = body.get("addresses", {})
+        btc_addr = addresses.get("bitcoin") or next(iter(addresses.values()), "")
+        return {
+            "charge_id": body.get("code", ""),
+            "address": btc_addr,
+            "currency": "BTC",
+            "amount_gbp": amount_gbp,
+            "hosted_url": body.get("hosted_url", ""),
+        }
+
+    async def crypto_check_balance(self, *, charge_id: str) -> dict[str, Any]:
+        if not self._coinbase_key:
+            return {"charge_id": charge_id, "status": "no_creds", "paid_amount_gbp": 0.0}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            r = await client.get(
+                f"{self.COINBASE_API}/charges/{charge_id}",
+                headers={
+                    "X-CC-Api-Key": self._coinbase_key,
+                    "X-CC-Version": self.COINBASE_API_VERSION,
+                },
+            )
+        if r.status_code != 200:
+            return {"charge_id": charge_id, "status": "not_found",
+                    "paid_amount_gbp": 0.0}
+        body = r.json().get("data", {})
+        payments = body.get("payments", [])
+        paid_gbp = 0.0
+        for p in payments:
+            local = p.get("value", {}).get("local", {})
+            try:
+                paid_gbp += float(local.get("amount", 0))
+            except (TypeError, ValueError):
+                pass
+        timeline = body.get("timeline", [])
+        status = timeline[-1].get("status", "NEW") if timeline else "NEW"
+        return {"charge_id": charge_id, "status": status, "paid_amount_gbp": paid_gbp}
+
+    # -- Stripe subscriptions --------------------------------------------------
+
+    async def subscription_create(
+        self, *, customer_id: str, price_id: str,
+    ) -> dict[str, Any]:
+        if not self._stripe_key or stripe is None:
+            return {"id": "", "customer": customer_id, "status": "no_creds",
+                    "price_id": price_id}
+        sub = await asyncio.to_thread(
+            stripe.Subscription.create,  # type: ignore[union-attr]
+            customer=customer_id,
+            items=[{"price": price_id}],
+        )
+        d = sub.to_dict()
+        return {"id": d.get("id", ""), "customer": d.get("customer", customer_id),
+                "status": d.get("status", ""), "price_id": price_id}
+
+    async def subscription_cancel(self, *, subscription_id: str) -> dict[str, Any]:
+        if not self._stripe_key or stripe is None:
+            return {"id": subscription_id, "status": "no_creds"}
+        sub = await asyncio.to_thread(
+            stripe.Subscription.cancel,  # type: ignore[union-attr]
+            subscription_id,
+        )
+        d = sub.to_dict()
+        return {"id": d.get("id", subscription_id), "status": d.get("status", "")}
+
+
 def make_live_ctx(
     *,
     caller_id: str,
@@ -992,6 +1382,11 @@ def make_live_ctx(
     imap_user: str = "",
     imap_password: str = "",
     email_domain: str = "",
+    gumroad_api_key: str = "",
+    paypal_client_id: str = "",
+    paypal_client_secret: str = "",
+    paypal_environment: str = "live",
+    coinbase_commerce_api_key: str = "",
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -1045,6 +1440,20 @@ def make_live_ctx(
     else:
         accounts = _NoopAccounts()
 
+    revenue: RevenueClient
+    if (gumroad_api_key or paypal_client_id or coinbase_commerce_api_key
+            or stripe_secret_key):
+        revenue = _LiveRevenue(
+            gumroad_api_key=gumroad_api_key,
+            paypal_client_id=paypal_client_id,
+            paypal_client_secret=paypal_client_secret,
+            paypal_environment=paypal_environment,
+            coinbase_commerce_api_key=coinbase_commerce_api_key,
+            stripe_secret_key=stripe_secret_key,
+        )
+    else:
+        revenue = _NoopRevenue()
+
     return SkillCtx(
         http=_LiveHttp(),
         sql=_LiveSql(db_pool),
@@ -1062,6 +1471,7 @@ def make_live_ctx(
         email=email,
         search=search,
         accounts=accounts,
+        revenue=revenue,
         caller_id=caller_id,
         budget_usd=budget_usd,
     )

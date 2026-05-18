@@ -274,6 +274,8 @@ class DirectiveRouter:
                 "GUMROAD_API_KEY", "STRIPE_SECRET_KEY",
                 "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
                 "STRIPE_ISSUING_CARDHOLDER_ID",
+                "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET",
+                "COINBASE_COMMERCE_API_KEY",
             ],
             workspace_root=str(self._metrics_dir / "workspace"),
             fs_allowed_roots=[
@@ -291,6 +293,11 @@ class DirectiveRouter:
             imap_user=settings.imap_user,
             imap_password=settings.imap_password,
             email_domain=settings.email_domain,
+            gumroad_api_key=settings.gumroad_api_key,
+            paypal_client_id=settings.paypal_client_id,
+            paypal_client_secret=settings.paypal_client_secret,
+            paypal_environment=settings.paypal_environment,
+            coinbase_commerce_api_key=settings.coinbase_commerce_api_key,
         )
 
         record = await REGISTRY.call(skill_name, params, ctx)

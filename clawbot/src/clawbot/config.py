@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     gumroad_api_key: str = ""
     stripe_secret_key: str = ""
 
+    # PayPal — order create/capture + transactions reporting (Phase H Task 25).
+    # Without these, _LiveRevenue's paypal_* methods return stub data so the
+    # revenue_aggregate_today_gbp skill still works (counts only what is set).
+    paypal_client_id: str = ""
+    paypal_client_secret: str = ""
+    paypal_environment: str = "live"  # "live" or "sandbox"
+
+    # Coinbase Commerce — fixed-price charges for crypto receive addresses.
+    # Optional; absent key makes crypto_* skills return empty stubs.
+    coinbase_commerce_api_key: str = ""
+
     # Search & extraction — both free-tier, both optional.
     # tavily: LLM-graded web search (1k/mo free). Used by SearchClient.search.
     # firecrawl: URL → clean markdown (500 pages/mo free). Used by web_researcher

@@ -27,6 +27,12 @@ EXPECTED_BUILTINS = {
     "write_cold_email", "write_landing_page_copy", "write_case_study",
     "summarize", "translate", "grammar_check", "readability_score",
     "tone_rewrite",
+    # Phase H — Task 25 revenue pack
+    "gumroad_list_products", "gumroad_sales_last_7d", "gumroad_get_sale",
+    "paypal_create_order", "paypal_capture_order", "paypal_list_transactions",
+    "crypto_generate_receive_address", "crypto_check_balance",
+    "stripe_subscription_create", "stripe_subscription_cancel",
+    "revenue_aggregate_today_gbp",
 }
 
 
