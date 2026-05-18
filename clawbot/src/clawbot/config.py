@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     #   2. Generate vault key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     #   3. Create a company-type Issuing cardholder once in Stripe dashboard;
     #      copy the ich_... id into STRIPE_ISSUING_CARDHOLDER_ID
+    # Portfolio operator: hard cap on concurrent active hypotheses.
+    # 3 is the realistic ceiling at free-tier LLM scale; raise to 5-10 on paid
+    # tier. Setting to 1 reverts to single-hypothesis behaviour.
+    max_active_hypotheses: int = 3
+
     accounts_vault_key: str = ""
     accounts_db_path: str = "data/accounts.db"
     imap_host: str = ""

@@ -145,6 +145,23 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
             )
+            # Multi-hypothesis portfolio columns (added 2026-05-18)
+            await conn.execute("""
+                ALTER TABLE active_hypothesis
+                ADD COLUMN IF NOT EXISTS weight NUMERIC(4, 3) NOT NULL DEFAULT 1.0
+            """)
+            await conn.execute("""
+                ALTER TABLE active_hypothesis
+                ADD COLUMN IF NOT EXISTS progress_score NUMERIC(4, 3) NOT NULL DEFAULT 0.0
+            """)
+            await conn.execute("""
+                ALTER TABLE plans
+                ADD COLUMN IF NOT EXISTS hypothesis_id TEXT
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plans_hypothesis "
+                "ON plans(hypothesis_id) WHERE hypothesis_id IS NOT NULL"
+            )
         # Phase H Task 29 — outreach + CRM
         async with self._pool.acquire() as conn:
             await conn.execute("""

@@ -50,6 +50,7 @@ class PlanStore:
 
     async def create_plan(
         self, *, agent_id: str, hypothesis: str, milestones: list[dict],
+        hypothesis_id: str | None = None,
     ) -> str:
         """Create a fresh plan chain. Returns the new plan_id.
 
@@ -62,8 +63,9 @@ class PlanStore:
                     status = "active" if idx == 0 else "pending"
                     await conn.execute(
                         "INSERT INTO plans (plan_id, agent_id, milestone_idx, hypothesis, "
-                        "success_criteria, evidence, status) VALUES ($1, $2, $3, $4, $5, '[]', $6)",
-                        plan_id, agent_id, idx, m["hypothesis"],
+                        "hypothesis_id, success_criteria, evidence, status) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, '[]', $7)",
+                        plan_id, agent_id, idx, m["hypothesis"], hypothesis_id,
                         json.dumps(m["success_criteria"]), status,
                     )
         return plan_id
@@ -150,3 +152,20 @@ class PlanStore:
         return await self.create_plan(
             agent_id=agent_id, hypothesis=new_hypothesis, milestones=new_milestones,
         )
+
+    async def abandon_plans_for_hypothesis(self, *, hypothesis_id: str, reason: str) -> int:
+        """When a hypothesis is killed, mark all its plans as abandoned.
+
+        Returns the number of plan rows updated. The `reason` is currently not
+        persisted (no plans.notes column); it appears in logs only."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE plans SET status='abandoned', updated_at=NOW() "
+                "WHERE hypothesis_id=$1 AND status IN ('active', 'pending')",
+                hypothesis_id,
+            )
+        # asyncpg returns "UPDATE N" as the command status; parse N
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
