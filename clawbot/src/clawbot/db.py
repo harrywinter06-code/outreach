@@ -232,3 +232,28 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_tickets_status_updated "
                 "ON tickets (status, updated_at DESC)"
             )
+        # Portfolio operator Task 1 — capital ledger
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS capital_ledger (
+                    entry_id BIGSERIAL PRIMARY KEY,
+                    skill_call_id BIGINT,
+                    agent_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    amount_gbp NUMERIC(12, 2) NOT NULL,
+                    currency_original TEXT NOT NULL DEFAULT 'GBP',
+                    amount_original NUMERIC(12, 2),
+                    stripe_object_id TEXT,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    is_live_mode BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_capital_ledger_created "
+                "ON capital_ledger(created_at DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_capital_ledger_agent "
+                "ON capital_ledger(agent_id, created_at DESC)"
+            )
