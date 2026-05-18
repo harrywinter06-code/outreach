@@ -130,3 +130,18 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_plans_agent_status "
                 "ON plans(agent_id, status, milestone_idx)"
             )
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS active_hypothesis (
+                    hypothesis_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    kill_criteria TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    killed_at TIMESTAMPTZ
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
+            )
