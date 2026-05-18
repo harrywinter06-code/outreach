@@ -230,6 +230,7 @@ class Scheduler:
         metrics_dir: Path = METRICS_DIR,
         causal_store: "CausalStore | None" = None,
         task_store: "TaskStore | None" = None,
+        db_pool=None,  # asyncpg.Pool | None; required for plan injection
     ) -> None:
         self._pool = pool
         self._bus = bus
@@ -241,6 +242,7 @@ class Scheduler:
         self._metrics_dir = metrics_dir
         self._causal_store = causal_store
         self._task_store = task_store
+        self._db_pool = db_pool
         self._agent_tasks: dict[str, asyncio.Task] = {}
         self._executive_cycle_counter: int = 0
         self._latest_resolution: dict | None = None
@@ -313,6 +315,7 @@ class Scheduler:
                 task_store=_task_store,
                 metrics_dir=self._metrics_dir,
                 brain=self._brain,
+                db_pool=self._db_pool,
             )
             tasks.append(asyncio.create_task(router.run(), name="directive-router"))
         # Operator escalation: subscriber persists + pushes; reply poller republishes.

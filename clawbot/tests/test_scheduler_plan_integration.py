@@ -118,3 +118,50 @@ async def test_plan_init_action_creates_plan_in_store(tmp_path):
     kwargs = plan_store_mock.create_plan.call_args.kwargs
     assert kwargs["agent_id"] == "cmo"
     assert kwargs["hypothesis"] == "Substack pilot"
+
+
+def test_scheduler_constructor_accepts_db_pool():
+    """Regression: db_pool must be a real constructor kwarg, not a setattr-after-init.
+    The previous code referenced self._db_pool without setting it, so plan
+    injection silently disabled in production. This test fails closed."""
+    from clawbot.scheduler import Scheduler
+    import inspect
+    sig = inspect.signature(Scheduler.__init__)
+    assert "db_pool" in sig.parameters, (
+        f"Scheduler.__init__ must accept db_pool kwarg; got {list(sig.parameters)}"
+    )
+
+
+def test_directive_router_constructor_accepts_db_pool():
+    from clawbot.directive_router import DirectiveRouter
+    import inspect
+    sig = inspect.signature(DirectiveRouter.__init__)
+    assert "db_pool" in sig.parameters, (
+        f"DirectiveRouter.__init__ must accept db_pool kwarg; got {list(sig.parameters)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_handler_raises_clearly_when_no_db_pool():
+    from clawbot.directive_router import DirectiveRouter
+    from unittest.mock import AsyncMock, MagicMock
+    bus = MagicMock(); bus.publish = AsyncMock()
+    # Construct router WITHOUT db_pool — handler should raise RuntimeError, not
+    # AttributeError. Use bare-minimum constructor signature — adapt if needed.
+    sig_params = {
+        "bus": bus,
+        "agent_factory": MagicMock(),
+        "brain": MagicMock(),
+        "metrics_dir": Path("/tmp/test_metrics_no_pool"),
+    }
+    # Auto-add other required args by introspecting __init__
+    import inspect
+    real_sig = inspect.signature(DirectiveRouter.__init__)
+    for pname, param in real_sig.parameters.items():
+        if pname == "self" or pname in sig_params or pname == "db_pool":
+            continue
+        if param.default is inspect.Parameter.empty:
+            sig_params[pname] = MagicMock()
+    router = DirectiveRouter(**sig_params, db_pool=None)
+    with pytest.raises(RuntimeError, match="db_pool"):
+        await router._handle_plan_advance(data={}, chain_id="c", from_agent="cmo")

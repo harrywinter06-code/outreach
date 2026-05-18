@@ -130,6 +130,7 @@ async def main() -> None:
         pool=pool, bus=bus, monitor=monitor,
         registry=registry, brain=brain, homeostasis=homeostasis,
         causal_store=causal_store, task_store=task_store,
+        db_pool=db.pool,
     )
     try:
         await asyncio.gather(

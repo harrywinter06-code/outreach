@@ -49,6 +49,7 @@ class DirectiveRouter:
         task_store: "TaskStore",
         metrics_dir: Path,
         brain: "CompanyBrain | None" = None,
+        db_pool=None,  # asyncpg.Pool | None; required for plan injection
     ) -> None:
         self._bus = bus
         self._causal_store = causal_store
@@ -57,6 +58,7 @@ class DirectiveRouter:
         self._task_store = task_store
         self._metrics_dir = metrics_dir
         self._brain = brain
+        self._db_pool = db_pool
 
     async def run(self) -> None:
         """Continuous poll loop. Runs until cancelled."""
@@ -340,7 +342,14 @@ class DirectiveRouter:
 
     async def _handle_plan_init(self, data: dict, chain_id: str, from_agent: str) -> None:
         from clawbot.plan_store import PlanStore
-        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        store = getattr(self, "_plan_store", None)
+        if store is None:
+            pool = getattr(self, "_db_pool", None)
+            if pool is None:
+                raise RuntimeError(
+                    "plan_* actions unavailable: DirectiveRouter has no db_pool wired"
+                )
+            store = PlanStore(pool)
         hypothesis = str(data.get("hypothesis", ""))[:400]
         milestones = data.get("milestones", [])
         if not isinstance(milestones, list) or not milestones:
@@ -352,7 +361,14 @@ class DirectiveRouter:
 
     async def _handle_plan_advance(self, data: dict, chain_id: str, from_agent: str) -> None:
         from clawbot.plan_store import PlanStore
-        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        store = getattr(self, "_plan_store", None)
+        if store is None:
+            pool = getattr(self, "_db_pool", None)
+            if pool is None:
+                raise RuntimeError(
+                    "plan_* actions unavailable: DirectiveRouter has no db_pool wired"
+                )
+            store = PlanStore(pool)
         advanced = await store.advance_milestone(agent_id=from_agent)
         logger.info(
             "Plan advance for %s: %s",
@@ -362,7 +378,14 @@ class DirectiveRouter:
 
     async def _handle_plan_pivot(self, data: dict, chain_id: str, from_agent: str) -> None:
         from clawbot.plan_store import PlanStore
-        store = getattr(self, "_plan_store", None) or PlanStore(getattr(self, "_db_pool", None))
+        store = getattr(self, "_plan_store", None)
+        if store is None:
+            pool = getattr(self, "_db_pool", None)
+            if pool is None:
+                raise RuntimeError(
+                    "plan_* actions unavailable: DirectiveRouter has no db_pool wired"
+                )
+            store = PlanStore(pool)
         reason = str(data.get("reason", ""))[:400]
         new_hypothesis = str(data.get("new_hypothesis", ""))[:400]
         new_milestones = data.get("new_milestones", [])
