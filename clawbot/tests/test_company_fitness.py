@@ -49,3 +49,36 @@ def test_breakdown_contains_all_components():
     assert "plan_velocity" in score.breakdown
     assert "skill_call_success_rate" in score.breakdown
     assert "capital_efficiency" in score.breakdown
+
+
+def test_capital_efficiency_tiers_log_scaled():
+    """1x return → ~0.30, 10x → ~1.0 (tiered, not flat)."""
+    # 1x return on £10 deployed
+    s1 = compute_company_fitness(
+        revenue_7d_gbp=Decimal("10"),
+        plans_active=1, plans_advanced_7d=1, plans_pivoted_7d=0,
+        capital_deployed_7d_gbp=Decimal("10"),
+        skill_calls_7d=5, skill_calls_success_7d=5,
+    )
+    # 10x return on £10 deployed
+    s10 = compute_company_fitness(
+        revenue_7d_gbp=Decimal("100"),
+        plans_active=1, plans_advanced_7d=1, plans_pivoted_7d=0,
+        capital_deployed_7d_gbp=Decimal("10"),
+        skill_calls_7d=5, skill_calls_success_7d=5,
+    )
+    # 1x scores < 10x — the metric distinguishes them
+    assert s1.capital_efficiency < s10.capital_efficiency
+    assert 0.20 <= s1.capital_efficiency <= 0.40
+    assert s10.capital_efficiency > 0.85
+
+
+def test_low_capital_yields_zero_efficiency():
+    """Below £1 deployed, efficiency is 0 (signal too noisy)."""
+    s = compute_company_fitness(
+        revenue_7d_gbp=Decimal("50"),
+        plans_active=1, plans_advanced_7d=1, plans_pivoted_7d=0,
+        capital_deployed_7d_gbp=Decimal("0.50"),  # below threshold
+        skill_calls_7d=5, skill_calls_success_7d=5,
+    )
+    assert s.capital_efficiency == 0.0

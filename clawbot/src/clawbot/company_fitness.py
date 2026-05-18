@@ -7,7 +7,11 @@ efficiency each carry signal that revenue alone can't surface in week 1.
 
 Aggregates across the FULL hypothesis portfolio — there is no per-hypothesis
 fitness here. If you need that, derive it from the per-hypothesis tables
-(revenue per hypothesis via causal_chain → product_causal_map → capital_ledger.metadata)."""
+(revenue per hypothesis via causal_chain → product_causal_map → capital_ledger.metadata).
+
+TODO(revenue-source): the revenue query depends on `action_type IN (...)`
+rows being written to capital_ledger. Currently nothing in production writes
+charge_authorized. Stripe webhook handler is the right next step."""
 from __future__ import annotations
 
 import math
@@ -48,11 +52,14 @@ def compute_company_fitness(
         if skill_calls_7d > 0 else 0.0
     )
 
-    capital_efficiency_raw = (
-        float(revenue_7d_gbp) / max(1.0, float(capital_deployed_7d_gbp))
-        if capital_deployed_7d_gbp > 0 else 0.0
-    )
-    capital_efficiency = min(1.0, capital_efficiency_raw)
+    # Capital efficiency: revenue per £ deployed. Below £1 of deployed capital
+    # the ratio is too noisy to carry signal — return 0 rather than fabricate.
+    if capital_deployed_7d_gbp > Decimal("1.0"):
+        capital_efficiency_raw = float(revenue_7d_gbp) / float(capital_deployed_7d_gbp)
+        # Use log scaling so 1x:1 → ~0.30, 10x → ~1.0 (tier the signal)
+        capital_efficiency = min(1.0, math.log1p(capital_efficiency_raw) / math.log1p(10.0))
+    else:
+        capital_efficiency = 0.0
 
     raw_score = (
         0.40 * revenue_score
@@ -104,12 +111,17 @@ async def compute_and_snapshot(*, db_pool, today_iso: str | None = None) -> Comp
     import json as _json
     snapshot_date = today_iso or date.today().isoformat()
     async with db_pool.acquire() as conn:
-        # Revenue: positive amounts from capital_ledger charge_authorized in last 7d
+        # Revenue: ANY positive-amount ledger entry within window.
+        # The intended action_type for revenue is 'charge_authorized', but
+        # nothing in production writes that yet (TODO: Stripe webhook handler).
+        # Until then, sum any positive amount: tests that record 'charge_authorized'
+        # work, manual revenue entries work, and the Goodhart guard at line 70
+        # behaves as designed when revenue is genuinely zero.
         rev_row = await conn.fetchrow(
             "SELECT COALESCE(SUM(amount_gbp), 0) AS rev FROM capital_ledger "
-            "WHERE action_type='charge_authorized' "
-            "AND created_at > NOW() - INTERVAL '7 days' "
-            "AND amount_gbp > 0"
+            "WHERE created_at > NOW() - INTERVAL '7 days' "
+            "AND amount_gbp > 0 "
+            "AND action_type IN ('charge_authorized', 'manual_revenue', 'gumroad_sale', 'paypal_sale')"
         )
         revenue_7d = Decimal(str(rev_row["rev"])) if rev_row else Decimal("0")
 
@@ -137,21 +149,19 @@ async def compute_and_snapshot(*, db_pool, today_iso: str | None = None) -> Comp
         )
         capital_deployed_7d = Decimal(str(cap_row["dep"])) if cap_row else Decimal("0")
 
-        # skill_calls table — column names might differ; try common shapes
-        try:
-            sc_total_row = await conn.fetchrow(
-                "SELECT COUNT(*) AS n FROM skill_calls "
-                "WHERE created_at > NOW() - INTERVAL '7 days'"
-            )
-            sc_total = int(sc_total_row["n"]) if sc_total_row else 0
-            sc_ok_row = await conn.fetchrow(
-                "SELECT COUNT(*) AS n FROM skill_calls "
-                "WHERE created_at > NOW() - INTERVAL '7 days' AND ok = TRUE"
-            )
-            sc_ok = int(sc_ok_row["n"]) if sc_ok_row else 0
-        except Exception:
-            sc_total = 0
-            sc_ok = 0
+        # skill_calls table uses `called_at` not `created_at` (see db.py:107).
+        # Don't catch broad exceptions here — if the schema regresses we want
+        # to know loudly, not silently report 0 to the operator.
+        sc_total_row = await conn.fetchrow(
+            "SELECT COUNT(*) AS n FROM skill_calls "
+            "WHERE called_at > NOW() - INTERVAL '7 days'"
+        )
+        sc_total = int(sc_total_row["n"]) if sc_total_row else 0
+        sc_ok_row = await conn.fetchrow(
+            "SELECT COUNT(*) AS n FROM skill_calls "
+            "WHERE called_at > NOW() - INTERVAL '7 days' AND ok = TRUE"
+        )
+        sc_ok = int(sc_ok_row["n"]) if sc_ok_row else 0
 
     score = compute_company_fitness(
         revenue_7d_gbp=revenue_7d,

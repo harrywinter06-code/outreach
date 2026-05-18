@@ -701,10 +701,20 @@ class _LivePayments:
         from decimal import Decimal
         if not secret_key:
             raise ValueError("STRIPE_SECRET_KEY not set — _LivePayments cannot operate")
+        if not secret_key.startswith(("sk_", "rk_")):
+            raise ValueError(
+                f"STRIPE_SECRET_KEY has unexpected prefix — got {secret_key[:8]!r}. "
+                "Expected sk_live_, sk_test_, rk_live_, or rk_test_."
+            )
         if stripe is None:
             raise RuntimeError("stripe SDK not installed")
-        stripe.api_key = secret_key
-        self._is_live_key = secret_key.startswith("sk_live_")
+        # Do NOT set stripe.api_key globally — concurrent instances would race.
+        # Pass api_key= per-call instead (see every stripe.* call below).
+        self._api_key = secret_key
+        # Live-mode detection: positive identification of any production key prefix
+        # (sk_live_, rk_live_, plus future variants Stripe may add).
+        # Conservative: any key NOT containing "_test_" in the first 20 chars is live.
+        self._is_live_key = "_test_" not in secret_key[:20]
         self._capital_ledger = capital_ledger
         self._live_mode_enabled = live_mode_enabled
         self._capital_daily_cap_gbp = Decimal(str(capital_daily_cap_gbp or 0))
@@ -718,10 +728,13 @@ class _LivePayments:
         with a specific cap-name on refusal. Returns True for test-mode (sk_test_)
         keys regardless of gates — test mode is a free playground."""
         from decimal import Decimal
-        if not self._is_live_key:
-            return True
+        # Freeze is checked FIRST so operator's emergency-stop halts everything,
+        # including test-mode probes that consume Stripe API quota.
         if self._capital_freeze:
             raise RuntimeError("capital_freeze_active — operator has halted all spending")
+        # Test-mode keys bypass remaining gates (caps, live-mode checks).
+        if not self._is_live_key:
+            return True
         if not self._live_mode_enabled:
             raise RuntimeError("live_mode_not_enabled — operator has not graduated to live")
         if self._capital_daily_cap_gbp <= 0 or self._capital_weekly_cap_gbp <= 0:
@@ -747,38 +760,84 @@ class _LivePayments:
         return True
 
     async def create_product(self, *, name: str, description: str) -> dict[str, Any]:
-        prod = await asyncio.to_thread(stripe.Product.create, name=name, description=description)
+        prod = await asyncio.to_thread(
+            stripe.Product.create, name=name, description=description, api_key=self._api_key,
+        )
         return prod.to_dict()
 
     async def create_price(self, *, product_id: str, amount_pence: int, currency: str = "gbp", recurring: bool = False) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"product": product_id, "unit_amount": amount_pence, "currency": currency}
+        kwargs: dict[str, Any] = {
+            "product": product_id, "unit_amount": amount_pence,
+            "currency": currency, "api_key": self._api_key,
+        }
         if recurring:
             kwargs["recurring"] = {"interval": "month"}
         price = await asyncio.to_thread(stripe.Price.create, **kwargs)
         return price.to_dict()
 
     async def create_payment_link(self, *, price_id: str, quantity: int = 1) -> dict[str, Any]:
+        from decimal import Decimal
+        await self._enforce_capital_gates(
+            prospective_amount_gbp=Decimal("0"), agent_id="system",
+        )
         link = await asyncio.to_thread(
             stripe.PaymentLink.create,
             line_items=[{"price": price_id, "quantity": quantity}],
+            api_key=self._api_key,
         )
-        return link.to_dict()
+        result = link.to_dict()
+        # Record to ledger as a payment_link_created event (zero amount).
+        if self._capital_ledger is not None:
+            try:
+                await self._capital_ledger.record(
+                    agent_id="system",
+                    action_type="payment_link_created",
+                    amount_gbp=Decimal("0"),
+                    is_live_mode=self._is_live_key,
+                    stripe_object_id=result.get("id"),
+                    metadata={"price_id": price_id, "quantity": quantity},
+                )
+            except Exception as exc:
+                logger.warning("payment_link ledger record failed: %s", exc)
+        return result
 
     async def list_charges(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        charges = await asyncio.to_thread(stripe.Charge.list, limit=limit)
+        charges = await asyncio.to_thread(stripe.Charge.list, limit=limit, api_key=self._api_key)
         return [c.to_dict() for c in charges.auto_paging_iter()][:limit]
 
     async def refund(self, *, charge_id: str, amount_pence: int | None = None) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"charge": charge_id}
+        from decimal import Decimal
+        kwargs: dict[str, Any] = {"charge": charge_id, "api_key": self._api_key}
         if amount_pence is not None:
             kwargs["amount"] = amount_pence
         ref = await asyncio.to_thread(stripe.Refund.create, **kwargs)
-        return ref.to_dict()
+        result = ref.to_dict()
+        # Record as a negative entry so the running total reflects net spend.
+        if self._capital_ledger is not None:
+            try:
+                refund_gbp = Decimal(str(result.get("amount", 0))) / Decimal("100")
+                if refund_gbp > 0:
+                    await self._capital_ledger.record(
+                        agent_id="system",
+                        action_type="refund_processed",
+                        amount_gbp=-refund_gbp,
+                        is_live_mode=self._is_live_key,
+                        stripe_object_id=result.get("id"),
+                        metadata={"charge_id": charge_id},
+                    )
+            except Exception as exc:
+                logger.warning("refund ledger record failed: %s", exc)
+        return result
 
     async def issue_card(
         self, *, cardholder_id: str, daily_limit_usd: int, agent_id: str,
     ) -> dict[str, Any]:
         from decimal import Decimal
+        # Validate before any side effects.
+        if not isinstance(daily_limit_usd, int) or daily_limit_usd <= 0:
+            raise ValueError(
+                f"daily_limit_usd must be a positive integer, got {daily_limit_usd!r}"
+            )
         prospective_gbp = Decimal(str(daily_limit_usd))
         await self._enforce_capital_gates(
             prospective_amount_gbp=prospective_gbp, agent_id=agent_id,
@@ -795,12 +854,15 @@ class _LivePayments:
                 ],
             },
             metadata={"agent_id": agent_id},
+            api_key=self._api_key,
         )
         result = card.to_dict()
-        # Strip sensitive fields defensively
         for sensitive in ("number", "cvc"):
             result.pop(sensitive, None)
-        # Log to ledger AFTER Stripe success but BEFORE returning
+
+        # Log to ledger AFTER Stripe success. If this fails, the card EXISTS
+        # but is unaccounted — the next cap check would see a stale total and
+        # allow further issuance. Freeze the card immediately and raise.
         if self._capital_ledger is not None:
             try:
                 await self._capital_ledger.record(
@@ -811,13 +873,28 @@ class _LivePayments:
                     stripe_object_id=result.get("id"),
                     metadata={"cardholder_id": cardholder_id, "daily_limit_usd": daily_limit_usd},
                 )
-            except Exception:
-                pass  # ledger failure must not break the response
+            except Exception as exc:
+                # Critical: card minted, ledger missed it. Cancel the card
+                # before returning so the cap isn't bypassed.
+                try:
+                    if stripe is not None:
+                        await asyncio.to_thread(
+                            stripe.issuing.Card.modify,  # type: ignore[union-attr]
+                            result["id"], status="canceled",
+                            api_key=self._api_key,
+                        )
+                except Exception:
+                    pass  # already in a bad state — at least log it
+                raise RuntimeError(
+                    f"ledger_write_failed_after_stripe — card {result.get('id')} "
+                    f"was canceled to maintain cap integrity. Original error: {exc}"
+                ) from exc
         return result
 
     async def freeze_card(self, *, card_id: str) -> dict[str, Any]:
         card = await asyncio.to_thread(
             stripe.issuing.Card.modify, card_id, status="canceled",  # type: ignore[union-attr]
+            api_key=self._api_key,
         )
         return card.to_dict()
 
@@ -827,6 +904,7 @@ class _LivePayments:
         # end. limit is also passed to the API so the page size matches.
         auths = await asyncio.to_thread(
             stripe.issuing.Authorization.list, card=card_id, limit=limit,  # type: ignore[union-attr]
+            api_key=self._api_key,
         )
         return [a.to_dict() for a in auths.data]
 
@@ -835,6 +913,7 @@ class _LivePayments:
     ) -> dict[str, Any]:
         dispute = await asyncio.to_thread(
             stripe.Dispute.modify, dispute_id, evidence=evidence,  # type: ignore[union-attr]
+            api_key=self._api_key,
         )
         return dispute.to_dict()
 
