@@ -215,6 +215,11 @@ class SkillCtx:
     dev: DevClient
     caller_id: str
     budget_usd: float
+    # Swarm Phase Z2.5 — attribution. When a skill call originates from a
+    # business cycle, this carries the business_id; downstream code (the
+    # skill_calls INSERT, the stripe payment-link metadata) reads it to
+    # attribute work + revenue. NULL for executive / ad-hoc cycles.
+    business_id: str | None = None
 
 
 # -- No-op stubs used by tests and shadow mode -------------------------------
@@ -462,7 +467,9 @@ class _NoopDev:
                 "cmd_name": cmd_name, "args": args, "cwd": cwd}
 
 
-def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
+def make_noop_ctx(
+    *, caller_id: str, budget_usd: float, business_id: str | None = None,
+) -> SkillCtx:
     return SkillCtx(
         http=_NoopHttp(), sql=_NoopSql(), llm=_NoopLlm(), vector=_NoopVector(),
         secret=_NoopSecret(), fs=_NoopFs(), time=_NoopTime(), operator=_NoopOperator(),
@@ -472,7 +479,7 @@ def make_noop_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         revenue=_NoopRevenue(),
         media=_NoopMedia(),
         dev=_NoopDev(),
-        caller_id=caller_id, budget_usd=budget_usd,
+        caller_id=caller_id, budget_usd=budget_usd, business_id=business_id,
     )
 
 
@@ -1876,6 +1883,7 @@ def make_live_ctx(
     removebg_api_key: str = "",
     screenshot_api_key: str = "",
     dev_allowed_root: str = "",
+    business_id: str | None = None,
 ) -> SkillCtx:
     """Build a SkillCtx wired to live services.
 
@@ -1996,4 +2004,5 @@ def make_live_ctx(
         dev=dev,
         caller_id=caller_id,
         budget_usd=budget_usd,
+        business_id=business_id,
     )

@@ -383,3 +383,34 @@ class Database:
                 "ALTER TABLE business_revenue "
                 "ADD COLUMN IF NOT EXISTS is_self_paid BOOLEAN NOT NULL DEFAULT FALSE"
             )
+
+        # Swarm Phase Z2.5 — attribution: every skill_call knows which
+        # business it served. Nullable so executive/ad-hoc calls still
+        # work. Partial index because most early rows will be NULL.
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE skill_calls ADD COLUMN IF NOT EXISTS business_id TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_skill_calls_business "
+                "ON skill_calls(business_id, called_at DESC) "
+                "WHERE business_id IS NOT NULL"
+            )
+
+            # Per-business email captures. A fitness signal — closer to revenue
+            # than raw skill activity, leading indicator of conversion.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS business_leads (
+                    lead_id BIGSERIAL PRIMARY KEY,
+                    business_id TEXT NOT NULL REFERENCES businesses(business_id),
+                    email TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(business_id, email)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_business_leads_biz "
+                "ON business_leads(business_id, captured_at DESC)"
+            )

@@ -36,9 +36,17 @@ def test_noop_ctx_exposes_all_surfaces():
     ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
     assert ctx.caller_id == "test"
     assert ctx.budget_usd == 1.0
+    assert ctx.business_id is None, "business_id defaults to None for non-business cycles"
     # Every documented surface must be present
     for surface in ("http", "sql", "llm", "vector", "secret", "fs", "time", "operator", "bus", "log"):
         assert hasattr(ctx, surface), f"missing surface: {surface}"
+
+
+def test_noop_ctx_accepts_business_id():
+    """Z2.5 attribution: per-business-cycle ctx carries business_id for downstream
+    skill_calls INSERT and Stripe payment-link metadata."""
+    ctx = make_noop_ctx(caller_id="biz_runner", budget_usd=0.05, business_id="biz_abc123")
+    assert ctx.business_id == "biz_abc123"
 
 def test_noop_http_get_returns_empty():
     ctx = make_noop_ctx(caller_id="test", budget_usd=1.0)
@@ -70,6 +78,30 @@ def test_live_ctx_passes_caller_id():
     )
     assert ctx.caller_id == "worker-1"
     assert ctx.budget_usd == 0.50
+
+def test_live_ctx_passes_business_id_through():
+    """Z2.5: make_live_ctx accepts business_id and the resulting ctx carries it."""
+    ctx = make_live_ctx(
+        caller_id="biz_runner", budget_usd=0.05,
+        business_id="biz_council_42",
+        llm_pool=MagicMock(), bus=MagicMock(), brain=MagicMock(),
+        db_pool=MagicMock(), escalation=MagicMock(),
+        secret_allowlist=["FOO"], workspace_root="/tmp/x",
+    )
+    assert ctx.business_id == "biz_council_42"
+    assert ctx.caller_id == "biz_runner"
+
+
+def test_live_ctx_business_id_defaults_to_none():
+    """Executive cycles construct ctx without business_id — must stay NULL."""
+    ctx = make_live_ctx(
+        caller_id="ceo", budget_usd=0.10,
+        llm_pool=MagicMock(), bus=MagicMock(), brain=MagicMock(),
+        db_pool=MagicMock(), escalation=MagicMock(),
+        secret_allowlist=["FOO"], workspace_root="/tmp/x",
+    )
+    assert ctx.business_id is None
+
 
 def test_live_operator_message_publishes_to_bus_without_escalation_object():
     """_LiveOperator.message must NOT call escalation.notify (the router

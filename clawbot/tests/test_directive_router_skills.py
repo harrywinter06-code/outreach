@@ -86,9 +86,9 @@ async def test_router_publishes_skill_error_to_inbox(tmp_path):
 
 @pytest.mark.asyncio
 async def test_router_strips_framing_fields_before_skill_call(tmp_path):
-    """`dashboard_widget`, `priority`, `escalate`, `next_wakeup_s` must NOT
-    leak into the skill's run() kwargs — they are SOUL-prompt framing fields
-    consumed by the scheduler, not skill params."""
+    """`dashboard_widget`, `priority`, `escalate`, `next_wakeup_s`, `business_id`
+    must NOT leak into the skill's run() kwargs — they are framing fields
+    consumed by the scheduler / router, not skill params."""
     router, _ = _make_router_with_skill(tmp_path)
     handler = router._get_handler("weather_check")
     assert handler is not None
@@ -99,11 +99,40 @@ async def test_router_strips_framing_fields_before_skill_call(tmp_path):
         "priority": "high",
         "escalate": False,
         "next_wakeup_s": 600,
+        "business_id": "biz_xyz",
     }
     await handler(data, "chain-fr", "ceo")
     router._bus.publish_inbox.assert_called_once()
     target, payload = router._bus.publish_inbox.call_args.args
     assert payload["ok"] is True, f"skill should succeed; got: {payload!r}"
+
+
+@pytest.mark.asyncio
+async def test_router_threads_business_id_into_skill_ctx(tmp_path):
+    """Z2.5: when the directive data includes business_id, it MUST reach
+    make_live_ctx (so the SkillCtx.business_id is set and skill_calls
+    rows attribute correctly)."""
+    from unittest.mock import patch
+    router, _ = _make_router_with_skill(tmp_path)
+    handler = router._get_handler("weather_check")
+    assert handler is not None
+    captured = {}
+    real_make_live_ctx = None
+    from clawbot import skill_ctx as sc_mod
+    real_make_live_ctx = sc_mod.make_live_ctx
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_make_live_ctx(**kwargs)
+
+    with patch("clawbot.skill_ctx.make_live_ctx", side_effect=_spy):
+        await handler(
+            {"action": "weather_check", "city": "London", "business_id": "biz_council_99"},
+            "chain-bz", "biz_runner",
+        )
+    assert captured.get("business_id") == "biz_council_99", (
+        f"router did not forward business_id to make_live_ctx; got: {captured!r}"
+    )
 
 
 @pytest.mark.asyncio

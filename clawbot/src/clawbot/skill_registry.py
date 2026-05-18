@@ -122,8 +122,14 @@ class SkillRegistry:
         skill = self._skills.get(name)
         return skill.meta if skill else None
 
-    async def _record_db_stat(self, record: SkillCallRecord) -> None:
-        """Insert a row into skill_calls. Swallows all errors to never break callers."""
+    async def _record_db_stat(
+        self, record: SkillCallRecord, *, business_id: str | None = None,
+    ) -> None:
+        """Insert a row into skill_calls. Swallows all errors to never break callers.
+
+        business_id (Z2.5) is pulled from the SkillCtx at call time so per-business
+        activity attribution works end-to-end. NULL for executive cycles.
+        """
         if self._stats_db is None:
             return
         try:
@@ -131,8 +137,8 @@ class SkillRegistry:
                 await conn.execute(
                     """
                     INSERT INTO skill_calls
-                        (skill_name, caller_id, ok, cost_usd, latency_ms, error)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                        (skill_name, caller_id, ok, cost_usd, latency_ms, error, business_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
                     record.skill_name,
                     record.caller_id,
@@ -140,6 +146,7 @@ class SkillRegistry:
                     record.cost_usd,
                     record.latency_ms,
                     record.error,
+                    business_id,
                 )
         except Exception as exc:
             logger.warning("skill_calls INSERT failed: %s", exc)
@@ -255,7 +262,7 @@ class SkillRegistry:
                 error=f"{type(exc).__name__}: {exc}",
             )
         self._record_live_call(name, record.ok)
-        await self._record_db_stat(record)
+        await self._record_db_stat(record, business_id=ctx.business_id)
         return record
 
     async def run_watcher(self) -> None:

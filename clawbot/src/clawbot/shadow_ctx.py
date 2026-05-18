@@ -81,7 +81,9 @@ class _ShadowFs:
         return [str(p) for p in self._tmpdir.iterdir()]
 
 
-def make_shadow_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
+def make_shadow_ctx(
+    *, caller_id: str, budget_usd: float, business_id: str | None = None,
+) -> SkillCtx:
     """Return a SkillCtx suitable for shadow-mode validation runs.
 
     HTTP is fixture-backed (catches API-shape hallucinations), fs uses a
@@ -109,4 +111,5 @@ def make_shadow_ctx(*, caller_id: str, budget_usd: float) -> SkillCtx:
         dev=_NoopDev(),
         caller_id=caller_id,
         budget_usd=budget_usd,
+        business_id=business_id,
     )

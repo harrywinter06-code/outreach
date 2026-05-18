@@ -158,12 +158,18 @@ class DirectiveRouter:
                 # Skills consume the whole `data` minus framing fields as params.
                 # `dashboard_widget` is a sibling-of-action field consumed by the
                 # scheduler's widget upserter — never a skill kwarg.
+                # `business_id` is per-call attribution metadata threaded into
+                # the SkillCtx — also framing, not a skill kwarg.
                 framing = {
                     "action", "directive", "priority", "next_wakeup_s",
-                    "escalate", "dashboard_widget",
+                    "escalate", "dashboard_widget", "business_id",
                 }
                 params = {k: v for k, v in data.items() if k not in framing}
-                await self._handle_skill_call(action, params, chain_id, from_agent)
+                business_id = data.get("business_id")
+                await self._handle_skill_call(
+                    action, params, chain_id, from_agent,
+                    business_id=business_id,
+                )
             return _wrapper
         return None
 
@@ -254,6 +260,7 @@ class DirectiveRouter:
 
     async def _handle_skill_call(
         self, skill_name: str, params: dict, chain_id: str, from_agent: str,
+        business_id: str | None = None,
     ) -> None:
         """Dispatch a registered skill, publish result to caller inbox.
 
@@ -261,6 +268,9 @@ class DirectiveRouter:
         the registry directly): every action already flows through this router,
         gets CAG-logged, gets ack semantics, gets one error-handling surface.
         Skills inherit all of that for free.
+
+        business_id (Z2.5) attributes the call to a specific business when
+        invoked from a business-cycle context. NULL for executive cycles.
         """
         from clawbot.skill_registry import REGISTRY
         from clawbot.skill_ctx import make_live_ctx
@@ -271,6 +281,7 @@ class DirectiveRouter:
         ctx = make_live_ctx(
             caller_id=from_agent,
             budget_usd=0.10,  # per-call soft cap; daily cap still applies via Monitor
+            business_id=business_id,
             llm_pool=getattr(self._factory, "_pool", None),
             bus=self._bus,
             brain=self._brain,
