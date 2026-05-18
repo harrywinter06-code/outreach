@@ -82,6 +82,7 @@ EXPECTED_BUILTINS = {
     "dns_set_record", "dns_verify_propagation", "ssl_check_expiry",
     "domain_check_availability", "domain_register",
     "cloudflare_purge_cache", "cloudflare_deploy_pages_site",
+    "infra_db_health", "infra_redis_health", "infra_status_report",
     # Phase H — Task 37 compliance pack
     "sanctions_check", "kyc_verify_address", "fraud_score_transaction",
     "captcha_solve", "gdpr_data_export", "gdpr_delete_user",
