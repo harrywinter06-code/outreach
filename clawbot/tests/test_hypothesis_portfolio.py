@@ -106,3 +106,69 @@ async def test_portfolio_respects_cap(pool):
     with pytest.raises(RuntimeError, match="portfolio_full"):
         await store.add_hypothesis(name="test_cap_overflow", description="x",
                                     kill_criteria={}, weight=0.1)
+
+
+@pytest.mark.asyncio
+async def test_kill_hypothesis_cascades_to_plans(pool):
+    """Killing a hypothesis must cascade its plans to abandoned."""
+    from clawbot.hypothesis_store import HypothesisStore
+    from clawbot.plan_store import PlanStore
+    hyp_store = HypothesisStore(pool)
+    plan_store = PlanStore(pool)
+    await hyp_store.init_schema()
+    await plan_store.init_schema()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM active_hypothesis WHERE name LIKE 'test_csc_%'")
+        await conn.execute("DELETE FROM plans WHERE agent_id='test_csc_cmo'")
+
+    hid = await hyp_store.add_hypothesis(
+        name="test_csc_h1", description="x", kill_criteria={}, weight=0.5,
+    )
+    await plan_store.create_plan(
+        agent_id="test_csc_cmo", hypothesis="m",
+        milestones=[{"hypothesis": "first", "success_criteria": ["c"]}],
+        hypothesis_id=hid,
+    )
+    # Plan is active and linked
+    cur = await plan_store.get_current_milestone(agent_id="test_csc_cmo")
+    assert cur is not None
+    assert cur.status == "active"
+
+    await hyp_store.kill_hypothesis_by_id(hypothesis_id=hid, reason="test")
+
+    # Plan is now abandoned
+    cur = await plan_store.get_current_milestone(agent_id="test_csc_cmo")
+    assert cur is None  # no longer 'active'
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM plans WHERE agent_id='test_csc_cmo' LIMIT 1"
+        )
+    assert row["status"] == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_add_hypothesis_cap_holds_under_concurrent_inserts(pool):
+    """Two concurrent add_hypothesis at cap-1 must not both succeed."""
+    from clawbot.hypothesis_store import HypothesisStore
+    import asyncio
+    store = HypothesisStore(pool, max_active=2)
+    await store.init_schema()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM active_hypothesis WHERE name LIKE 'test_race_%'")
+    # Seed one to put us at cap-1
+    await store.add_hypothesis(name="test_race_seed", description="x",
+                                kill_criteria={}, weight=0.5)
+    # Two concurrent adds — only one should succeed
+    async def try_add(name: str) -> str:
+        try:
+            return await store.add_hypothesis(name=name, description="x",
+                                               kill_criteria={}, weight=0.5)
+        except RuntimeError as exc:
+            return str(exc)
+    results = await asyncio.gather(
+        try_add("test_race_a"), try_add("test_race_b"),
+    )
+    successes = [r for r in results if not str(r).startswith("portfolio_full")]
+    failures = [r for r in results if str(r).startswith("portfolio_full")]
+    assert len(successes) == 1, f"expected 1 success, got {len(successes)}: {results}"
+    assert len(failures) == 1
