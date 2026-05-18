@@ -22,6 +22,10 @@ EXPECTED_BUILTINS = {
     "worker_spawn", "worker_fire", "skill_request",
     "account_create", "account_get", "account_list", "account_mark_zombie",
     "stripe_issue_card", "stripe_freeze_card", "stripe_list_authorizations",
+    # Phase H — Session B (research/experiments/browser/media/SEO)
+    "experiment_create", "experiment_record_observation",
+    "experiment_compute_significance", "bandit_allocate_budget",
+    "experiment_kill_underperformer", "experiment_summarize",
 }
 
 

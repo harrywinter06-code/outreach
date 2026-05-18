@@ -145,3 +145,26 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
             )
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS experiments (
+                    id TEXT PRIMARY KEY,
+                    hypothesis TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    cutoff_at TIMESTAMPTZ
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS experiment_observations (
+                    id BIGSERIAL PRIMARY KEY,
+                    experiment_id TEXT NOT NULL REFERENCES experiments(id),
+                    arm TEXT NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_experiment_observations_exp_arm "
+                "ON experiment_observations (experiment_id, arm)"
+            )
