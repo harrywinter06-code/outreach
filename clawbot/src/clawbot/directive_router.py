@@ -276,6 +276,14 @@ class DirectiveRouter:
                 "STRIPE_ISSUING_CARDHOLDER_ID",
                 "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET",
                 "COINBASE_COMMERCE_API_KEY",
+                # Publishing-pack credentials (Phase H Task 27)
+                "SUBSTACK_EMAIL", "SUBSTACK_PASSWORD", "SUBSTACK_PUBLICATION_URL",
+                "MEDIUM_INTEGRATION_TOKEN", "MEDIUM_USER_ID",
+                "DEVTO_API_KEY",
+                "HASHNODE_PAT", "HASHNODE_PUBLICATION_ID",
+                "BSKY_HANDLE", "BSKY_APP_PASSWORD",
+                "MASTODON_INSTANCE", "MASTODON_ACCESS_TOKEN",
+                "BUFFER_ACCESS_TOKEN",
             ],
             workspace_root=str(self._metrics_dir / "workspace"),
             fs_allowed_roots=[

@@ -33,6 +33,10 @@ EXPECTED_BUILTINS = {
     "crypto_generate_receive_address", "crypto_check_balance",
     "stripe_subscription_create", "stripe_subscription_cancel",
     "revenue_aggregate_today_gbp",
+    # Phase H — Task 27 publishing pack
+    "substack_publish", "medium_publish", "dev_to_publish", "hashnode_publish",
+    "bluesky_post", "mastodon_post", "rss_publish", "buffer_schedule",
+    "newsletter_send", "youtube_upload",
 }
 
 
