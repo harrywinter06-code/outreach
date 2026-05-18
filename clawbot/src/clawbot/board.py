@@ -227,7 +227,11 @@ async def generate_hypothesis_for_portfolio(
     If portfolio is at cap, the LOWEST-WEIGHT active hypothesis is killed
     and the new one takes its slot.
 
-    Returns the new hypothesis_id."""
+    Returns the new hypothesis_id.
+
+    Race safety: a Postgres advisory lock (key=42) serialises concurrent calls
+    so that two simultaneous PIVOT paths cannot both read the portfolio as
+    under-cap and both add without killing (Audit A #4)."""
     messages = [
         {"role": "system", "content": "You are the board of an autonomous AI company. Output only valid JSON."},
         {"role": "user", "content": GENERATE_HYPOTHESIS_PROMPT.format(
@@ -236,24 +240,40 @@ async def generate_hypothesis_for_portfolio(
             pivot_rationale=pivot_rationale,
         )},
     ]
+    # LLM call outside the lock — only DB mutations need serialisation.
     raw = await pool.complete(messages, tier="executive", max_tokens=600)
-    data = json.loads(raw)
 
-    # If portfolio is full, kill the lowest-weight active row to make room.
-    portfolio = await store.get_active_portfolio()
-    if len(portfolio) >= max_active:
-        lowest = min(portfolio, key=lambda h: float(h["weight"]))
-        await store.kill_hypothesis_by_id(
-            hypothesis_id=lowest["hypothesis_id"],
-            reason=f"replaced by board PIVOT (rationale: {pivot_rationale[:200]})",
-        )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"Hypothesis generator returned non-JSON: {raw[:200]}")
 
-    return await store.add_hypothesis(
-        name=str(data["name"])[:40],
-        description=str(data["description"])[:400],
-        kill_criteria=data.get("kill_criteria", {}),
-        weight=1.0 / max_active,  # equal-weight by default; can be tuned
-    )
+    kill_criteria = data.get("kill_criteria") or {}  # null → {} (Audit A #5)
+
+    # Acquire a Postgres advisory lock to serialise portfolio mutations.
+    # Key 42 is arbitrary but must be consistent across all callers.
+    # pg_advisory_xact_lock releases automatically at transaction end.
+    PORTFOLIO_LOCK_KEY = 42
+    pool_obj = store._pool  # asyncpg.Pool exposed by HypothesisStore
+    async with pool_obj.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", PORTFOLIO_LOCK_KEY)
+            # Re-read portfolio inside the lock for a serialised view.
+            portfolio = await store.get_active_portfolio()
+            if len(portfolio) >= max(max_active, 1):
+                lowest = min(portfolio, key=lambda h: float(h["weight"]))
+                await store.kill_hypothesis_by_id(
+                    hypothesis_id=lowest["hypothesis_id"],
+                    reason=f"replaced by board PIVOT (rationale: {pivot_rationale[:200]})",
+                )
+            new_id = await store.add_hypothesis(
+                name=str(data["name"])[:40],
+                description=str(data["description"])[:400],
+                kill_criteria=kill_criteria,
+                weight=1.0 / max(max_active, 1),  # Audit A #12: guard /0
+            )
+
+    return new_id
 
 
 # Backwards-compat alias for any pre-portfolio callers

@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clawbot.hypothesis_store import HypothesisStore
 from clawbot.json_util import extract_json
 
 if TYPE_CHECKING:
@@ -314,6 +315,68 @@ class DirectiveRouter:
             coinbase_commerce_api_key=settings.coinbase_commerce_api_key,
         )
 
+        # === Approval gate (requires_approval=True skills) ===
+        meta = REGISTRY.get_meta(skill_name)
+        if meta is not None and getattr(meta, "requires_approval", False):
+            import json as _json
+            import uuid as _uuid
+            approval_id = _uuid.uuid4().hex
+            await self._bus.publish("operator.approval_request", {
+                "request_id": approval_id,
+                "skill_name": skill_name,
+                "from_agent": from_agent,
+                "params_preview": _json.dumps(params)[:500],
+                "chain_id": chain_id,
+            })
+            await self._bus.publish("operator.escalation", {
+                "severity": "request",
+                "summary": f"Skill '{skill_name}' from {from_agent} requires approval",
+                "detail": (
+                    f"Approval id: {approval_id}\n"
+                    f"Params: {_json.dumps(params)[:300]}\n"
+                    f"Reply via Telegram with `/approve {approval_id}` or `/deny {approval_id}`."
+                ),
+                "source": "directive_router",
+            })
+            # Poll for reply on operator.approval_reply with matching request_id.
+            import asyncio as _asyncio
+            from datetime import datetime as _dt, UTC as _UTC
+            APPROVAL_TIMEOUT_S = 3600  # 1 hour
+            deadline = _dt.now(_UTC).timestamp() + APPROVAL_TIMEOUT_S
+            approved: bool | None = None
+            while _dt.now(_UTC).timestamp() < deadline:
+                await _asyncio.sleep(2)
+                try:
+                    replies = await self._bus.read(
+                        "operator.approval_reply",
+                        consumer_id=f"approval-{approval_id}",
+                        count=10, block_ms=1000,
+                    )
+                except Exception:
+                    replies = []
+                for r in replies:
+                    if r.get("request_id") == approval_id:
+                        approved = bool(r.get("approved", False))
+                        break
+                if approved is not None:
+                    break
+            if not approved:
+                logger.warning(
+                    "Skill %s from %s denied or timed out (approval_id=%s)",
+                    skill_name, from_agent, approval_id,
+                )
+                await self._bus.publish_inbox(from_agent, {
+                    "from": f"skill:{skill_name}",
+                    "kind": "skill_denied",
+                    "error": "operator did not approve",
+                    "chain_id": chain_id,
+                })
+                return  # do NOT dispatch
+            logger.info(
+                "Skill %s from %s approved (approval_id=%s) — dispatching",
+                skill_name, from_agent, approval_id,
+            )
+
         record = await REGISTRY.call(skill_name, params, ctx)
 
         # Only record live calls for actual execution attempts (not param-validation rejections).
@@ -375,10 +438,26 @@ class DirectiveRouter:
         milestones = data.get("milestones", [])
         if not isinstance(milestones, list) or not milestones:
             raise ValueError("plan_init requires non-empty milestones list")
+        # Resolve hypothesis_id: explicit from agent, else highest-weight active.
+        hypothesis_id = data.get("hypothesis_id")
+        if hypothesis_id is None:
+            try:
+                pool = getattr(self, "_db_pool", None)
+                if pool is not None:
+                    hyp_store = HypothesisStore(pool)
+                    active = await hyp_store.get_active()
+                    if active is not None:
+                        hypothesis_id = active["hypothesis_id"]
+            except Exception as exc:
+                logger.warning("plan_init hypothesis lookup failed: %s", exc)
         await store.create_plan(
-            agent_id=from_agent, hypothesis=hypothesis, milestones=milestones,
+            agent_id=from_agent, hypothesis=hypothesis,
+            milestones=milestones, hypothesis_id=hypothesis_id,
         )
-        logger.info("Plan initialised for %s with %d milestones", from_agent, len(milestones))
+        logger.info(
+            "Plan initialised for %s with %d milestones (hypothesis_id=%s)",
+            from_agent, len(milestones), hypothesis_id,
+        )
 
     async def _handle_plan_advance(self, data: dict, chain_id: str, from_agent: str) -> None:
         from clawbot.plan_store import PlanStore
