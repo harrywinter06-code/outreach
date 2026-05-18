@@ -282,6 +282,7 @@ class Scheduler:
         task_store: "TaskStore | None" = None,
         db_pool=None,  # asyncpg.Pool | None; required for plan injection
         swarm_controller=None,  # SwarmController | None; required for swarm loops
+        business_cycle_runner=None,  # BusinessCycleRunner | None; per-business LLM cycles
     ) -> None:
         self._pool = pool
         self._bus = bus
@@ -295,6 +296,7 @@ class Scheduler:
         self._task_store = task_store
         self._db_pool = db_pool
         self._swarm = swarm_controller
+        self._business_cycle_runner = business_cycle_runner
         self._agent_tasks: dict[str, asyncio.Task] = {}
         self._executive_cycle_counter: int = 0
         self._latest_resolution: dict | None = None
@@ -400,6 +402,13 @@ class Scheduler:
             tasks.append(_ct(
                 self._swarm.run_cull_loop(settings.swarm_cull_interval_s),
                 name="swarm-cull",
+            ))
+        # Swarm Phase Z2.5b — per-business LLM cycle runner. One business
+        # per tick, round-robin oldest-cycled-first.
+        if self._business_cycle_runner is not None:
+            tasks.append(_ct(
+                self._business_cycle_runner.run_loop(settings.business_cycle_interval_s),
+                name="business-cycle-runner",
             ))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:

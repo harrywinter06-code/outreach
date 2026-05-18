@@ -56,15 +56,22 @@ class SwarmPolicy:
     template_sample_weight: float  # 0.0-1.0 — share of spawns drawn from templates
 
 
-def compute_business_fitness(biz: Business, *, now: datetime | None = None) -> float:
-    """Map (age, net_revenue) → fitness in [0.0, 1.0].
+def compute_business_fitness(
+    biz: Business, *, now: datetime | None = None, activity_score: int = 0,
+) -> float:
+    """Map (age, net_revenue, activity) → fitness in [0.0, 1.0].
 
-    Score is `sigmoid(ratio - 1)`-ish, where ratio = net_revenue / expected.
+    Revenue ratio: `sigmoid(ratio - 1)`-ish, where ratio = net_revenue / expected.
     Expected ramp: £0 day 0 → £1 day 7 → £5 day 14 → £20 day 30 → +£0.5/day.
 
-    A brand-new business (age < 1d) gets 0.5 (neutral — give it a chance).
-    Refunds and self-paid revenue are already netted in `revenue_total_gbp`
-    by `BusinessStore.record_revenue`.
+    Activity penalty (Z2.5b): a business older than 1 day with ZERO successful
+    skill_calls in 72h is sleepwalking. Halve its fitness so it sorts under
+    actively-trying peers. Even a revenue-positive but inactive business is
+    a cull candidate — revenue without ongoing work suggests luck, not skill.
+
+    A brand-new business (age < 1d) gets 0.5 (neutral). Refunds and
+    self-paid revenue are already netted in `revenue_total_gbp` by
+    `BusinessStore.record_revenue`.
     """
     now = now or datetime.now(UTC)
     spawned = biz.spawned_at
@@ -83,19 +90,33 @@ def compute_business_fitness(biz: Business, *, now: datetime | None = None) -> f
     else:
         expected = 20.0 + (age_days - 30.0) * 0.5
     ratio = net / expected
-    return min(1.0, max(0.0, ratio / (1.0 + ratio)))
+    fitness = min(1.0, max(0.0, ratio / (1.0 + ratio)))
+    if activity_score == 0:
+        fitness *= 0.5
+    return fitness
 
 
 def should_kill(
     biz: Business, *, policy: SwarmPolicy, now: datetime | None = None,
+    stall_threshold: int = 3,
 ) -> tuple[bool, str]:
-    """Deterministic kill rule. Returns (kill?, reason)."""
+    """Deterministic kill rule. Returns (kill?, reason).
+
+    Three rules, evaluated in order:
+    1. Stalled: artifact_stall_count >= threshold AND age >= 7d AND net = 0
+       → narrators die. Z2.5b addition.
+    2. Failed probation: past probation_days with zero net revenue.
+    3. Below threshold: past hard_kill_days with sub-£5 net revenue.
+    """
     now = now or datetime.now(UTC)
     spawned = biz.spawned_at
     if spawned.tzinfo is None:
         spawned = spawned.replace(tzinfo=UTC)
     age_days = (now - spawned).total_seconds() / 86_400.0
     net = max(0.0, biz.revenue_total_gbp)
+    stall = int((biz.metadata or {}).get("artifact_stall_count", 0))
+    if stall >= stall_threshold and age_days >= 7.0 and net == 0.0:
+        return True, f"stalled_no_artifacts:stall={stall},age={age_days:.1f}d"
     if age_days >= policy.probation_days and net == 0.0:
         return True, f"failed_probation:age={age_days:.1f}d,net=£0"
     if age_days >= policy.hard_kill_days and net < 5.0:
@@ -223,12 +244,21 @@ class SwarmController:
 
     async def cull_one_pass(self) -> int:
         """Recompute fitness for each active business; kill the unfit.
-        Returns number killed in this pass."""
+        Returns number killed in this pass.
+
+        Reads per-business activity score from skill_calls (Z2.5b) to apply
+        the inactivity penalty before deciding kill — a business that
+        produces revenue but stops trying is still a cull candidate."""
         active = await self._store.list_active()
         now = datetime.now(UTC)
         killed = 0
         for biz in active:
-            fitness = compute_business_fitness(biz, now=now)
+            try:
+                activity = await self._store.activity_score_72h(biz.business_id)
+            except Exception as exc:
+                logger.warning("activity_score read failed for %s: %s", biz.business_id, exc)
+                activity = 0
+            fitness = compute_business_fitness(biz, now=now, activity_score=activity)
             await self._store.update_fitness(business_id=biz.business_id, fitness=fitness)
             kill, reason = should_kill(biz, policy=self._policy, now=now)
             if kill:

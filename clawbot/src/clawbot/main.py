@@ -151,6 +151,13 @@ async def main() -> None:
         store=business_store, seeds=get_seed_genomes(), policy=swarm_policy,
     )
 
+    # Swarm Phase Z2.5b — per-business LLM cycle runner.
+    from clawbot.business_cycle_runner import BusinessCycleRunner
+    business_cycle_runner = BusinessCycleRunner(
+        store=business_store, llm_pool=pool, bus=bus,
+        stall_threshold=settings.business_artifact_stall_threshold,
+    )
+
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")
     await _register_executives(registry)
@@ -184,6 +191,8 @@ async def main() -> None:
     topics = [
         "ceo.directive", "cfo.directive", "cmo.directive",
         "coo.directive", "cto.directive",
+        # Z2.5b — shared topic for per-business cycle actions
+        "business.directive",
         "board.resolution", "coo.task", "cmo.campaign",
         "code.change_request", "operator.escalation", "operator.reply",
         "operator.message",
@@ -200,6 +209,7 @@ async def main() -> None:
         causal_store=causal_store, task_store=task_store,
         db_pool=db.pool,
         swarm_controller=swarm_controller,
+        business_cycle_runner=business_cycle_runner,
     )
     try:
         await asyncio.gather(

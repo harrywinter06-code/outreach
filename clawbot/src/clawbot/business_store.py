@@ -353,6 +353,36 @@ class BusinessStore:
             )
         return float(row["t"])
 
+    async def update_metadata(
+        self, *, business_id: str, updates: dict[str, Any],
+    ) -> None:
+        """Merge `updates` into the JSONB metadata column. Atomic single
+        statement via `||` — preserves keys not in `updates`.
+
+        Used by the cycle runner to persist last_artifact_url,
+        artifact_stall_count, payment_link_url, etc.
+        """
+        if not updates:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE businesses SET metadata = metadata || $2::jsonb "
+                "WHERE business_id = $1",
+                business_id, json.dumps(updates),
+            )
+
+    async def activity_score_72h(self, business_id: str) -> int:
+        """Successful skill_calls attributed to this business in the last 72h.
+        Used by compute_business_fitness as a leading-indicator-of-revenue."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM skill_calls "
+                "WHERE business_id = $1 AND ok = TRUE "
+                "AND called_at > NOW() - INTERVAL '72 hours'",
+                business_id,
+            )
+        return int(row["n"]) if row else 0
+
 
 def _to_jsonb_text(value: Any) -> str:
     """asyncpg returns jsonb columns as dict OR str depending on codec. Normalise."""

@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     swarm_cull_interval_s: float = Field(default=6 * 3600, ge=60.0, le=86_400.0)
     # Emergency stop — halts spawn loop without container restart.
     swarm_freeze: bool = False
+
+    # Z2.5b — per-business LLM cycle cadence. With cap=8 and 30min interval,
+    # each business cycles every ~4h on round-robin. Adjust down for
+    # higher iteration speed (watch NIM rate limits).
+    business_cycle_interval_s: float = Field(default=1800.0, ge=60.0, le=86_400.0)
+    # Cycles without an artifact before kill clock shortens
+    business_artifact_stall_threshold: int = Field(default=3, ge=1, le=20)
     # Probation: zero £ past this age → kill. Hard kill: <£5 past this age.
     swarm_probation_days: float = Field(default=14.0, ge=1.0, le=365.0)
     swarm_hard_kill_days: float = Field(default=21.0, ge=1.0, le=365.0)

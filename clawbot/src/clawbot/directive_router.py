@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 DIRECTIVE_TOPICS = [
     "ceo.directive", "cfo.directive", "cmo.directive",
     "coo.directive", "cto.directive",
+    # Z2.5b — all business cycles publish to one shared topic. The
+    # business_id is in the data dict (as a framing field) and gets
+    # threaded into the SkillCtx by `_wrapper` for attribution.
+    "business.directive",
 ]
 _POLL_BLOCK_MS = 200
 _UNKNOWN_CHAIN = "00000000-0000-0000-0000-000000000000"

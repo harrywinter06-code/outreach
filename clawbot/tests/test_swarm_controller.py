@@ -41,13 +41,28 @@ def test_fitness_zero_for_aged_zero_revenue():
     assert compute_business_fitness(b) == 0.0
 
 
+def test_fitness_halved_for_zero_activity_aged_business():
+    """Z2.5b: a business older than 1 day with zero skill_calls in 72h
+    gets fitness halved, even if revenue is positive — narration without
+    work is suspicious, real businesses keep trying."""
+    from clawbot.swarm_controller import compute_business_fitness
+    busy = _make_business(spawned_days_ago=14.0, revenue=5.0)
+    idle = _make_business(spawned_days_ago=14.0, revenue=5.0)
+    f_busy = compute_business_fitness(busy, activity_score=10)
+    f_idle = compute_business_fitness(idle, activity_score=0)
+    assert f_busy > f_idle, f"busy ({f_busy}) should beat idle ({f_idle})"
+    # Exact halving check
+    assert abs(f_idle - 0.5 * f_busy) < 0.01
+
+
 def test_fitness_climbs_with_revenue():
-    """A business meeting expectations gets ~0.5, doubling gets ~0.67."""
+    """A business meeting expectations gets ~0.5, doubling gets ~0.67.
+    Pass activity_score=1 so the Z2.5b inactivity halving doesn't fire."""
     from clawbot.swarm_controller import compute_business_fitness
     on_target = _make_business(spawned_days_ago=14.0, revenue=5.0)
     above = _make_business(spawned_days_ago=14.0, revenue=20.0)
-    f_on = compute_business_fitness(on_target)
-    f_above = compute_business_fitness(above)
+    f_on = compute_business_fitness(on_target, activity_score=1)
+    f_above = compute_business_fitness(above, activity_score=1)
     assert 0.4 < f_on < 0.6, f"on-target should be ~0.5; got {f_on}"
     assert f_above > f_on, f"above-target ({f_above}) must beat on-target ({f_on})"
     assert f_above <= 1.0
@@ -101,6 +116,37 @@ def test_should_not_kill_at_hard_threshold_above_5_revenue():
     b = _make_business(spawned_days_ago=22.0, revenue=8.0)
     kill, _ = should_kill(b, policy=policy)
     assert kill is False
+
+
+def test_should_kill_stalled_business_past_7d_with_zero_revenue():
+    """Z2.5b: artifact-stall rule kicks in BEFORE probation (day 7 vs day 14).
+    Narrators die faster than zero-revenue triers."""
+    from clawbot.swarm_controller import SwarmPolicy, should_kill
+    policy = SwarmPolicy(
+        max_active=8, seed_budget_gbp=1.0, graduation_revenue_gbp=50.0,
+        probation_days=14.0, hard_kill_days=21.0, template_sample_weight=0.7,
+    )
+    b = _make_business(spawned_days_ago=8.0, revenue=0.0)
+    # Inject stall metadata
+    from dataclasses import replace
+    b = replace(b, metadata={"artifact_stall_count": 4})
+    kill, reason = should_kill(b, policy=policy, stall_threshold=3)
+    assert kill is True
+    assert "stalled" in reason
+
+
+def test_should_not_kill_stalled_within_first_7d():
+    """Stall rule needs age >= 7d — fresh businesses get runway to find their feet."""
+    from clawbot.swarm_controller import SwarmPolicy, should_kill
+    from dataclasses import replace
+    policy = SwarmPolicy(
+        max_active=8, seed_budget_gbp=1.0, graduation_revenue_gbp=50.0,
+        probation_days=14.0, hard_kill_days=21.0, template_sample_weight=0.7,
+    )
+    b = _make_business(spawned_days_ago=3.0, revenue=0.0)
+    b = replace(b, metadata={"artifact_stall_count": 10})
+    kill, _ = should_kill(b, policy=policy, stall_threshold=3)
+    assert kill is False, "fresh businesses must get runway even when stalled"
 
 
 # ---- sampling ----
