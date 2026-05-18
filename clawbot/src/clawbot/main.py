@@ -94,6 +94,8 @@ async def main() -> None:
         redis_url=settings.redis_url,
         max_daily_spend_usd=settings.max_daily_spend_usd,
         kill_file=settings.kill_file_path,
+        capital_weekly_cap_gbp=settings.capital_weekly_cap_gbp,
+        db_pool=None,  # Set after db.connect() below
     )
     registry = AgentRegistry(redis_url=settings.redis_url)
     db = Database(database_url=settings.database_url)
@@ -103,6 +105,8 @@ async def main() -> None:
         pool.connect(), bus.connect(), monitor.connect(),
         registry.connect(), db.connect(), homeostasis.connect(),
     )
+    monitor._db_pool = db.pool
+    monitor.set_bus(bus)
     await db.init_schema()
 
     from clawbot.hypothesis_store import HypothesisStore

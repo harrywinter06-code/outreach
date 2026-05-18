@@ -60,6 +60,7 @@ EXECUTIVE_PEAK_INTERVAL_S = 600
 EXECUTIVE_SKELETON_INTERVAL_S = 3600
 REGISTRY_SYNC_INTERVAL_S = 60
 KILL_WATCHDOG_INTERVAL_S = 30
+CAPITAL_CAP_CHECK_INTERVAL_S = 300         # check capital cap proximity every 5 min
 EVOLUTION_POLL_INTERVAL_S = 3600           # check every hour whether to fire
 EVOLUTION_MAX_INTERVAL_S = 7 * 86_400      # never wait longer than 7 days
 EVOLUTION_REVENUE_EPSILON_GBP = 1.0        # ≥£1 7d-revenue delta triggers fire
@@ -378,6 +379,7 @@ class Scheduler:
                 logger.error("Task %s failed: %s", task.get_name(), task.exception())
 
     async def _kill_switch_watchdog(self) -> None:
+        last_capital_check = 0.0
         while True:
             if await self._monitor.should_halt():
                 logger.warning("Kill switch activated — shutting down")
@@ -385,6 +387,12 @@ class Scheduler:
             if await self._monitor.spend_limit_reached():
                 logger.warning("Daily spend limit reached — halting")
                 raise SystemExit(0)
+            # Check capital cap proximity every 5 minutes (less frequent than kill/spend checks)
+            import time
+            now = time.time()
+            if now - last_capital_check >= CAPITAL_CAP_CHECK_INTERVAL_S:
+                await self._monitor.check_capital_cap_proximity()
+                last_capital_check = now
             await asyncio.sleep(KILL_WATCHDOG_INTERVAL_S)
 
     # ── Executive loop ──────────────────────────────────────────────────────

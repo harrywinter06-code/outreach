@@ -7,13 +7,19 @@ holds a Redis lock. The file is created by a human (or a Fly.io cron writing to
 a mounted volume) and deleted to resume.
 
 Redis kill channel is a secondary, faster signal for graceful shutdown.
+
+Capital cap monitoring: publishes operator escalation when usage crosses 80% of
+weekly cap. Warning emitted at most once per UTC day.
 """
 import json
+import logging
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 KILL_REDIS_KEY = "clawbot:kill"
@@ -36,6 +42,8 @@ class Monitor:
         redis_url: str,
         max_daily_spend_usd: float = 5.00,
         kill_file: Path | str | None = None,
+        capital_weekly_cap_gbp: float = 0.0,
+        db_pool: Any = None,
     ) -> None:
         self._url = redis_url
         self._max_spend = max_daily_spend_usd
@@ -47,6 +55,11 @@ class Monitor:
         else:
             self._kill_file = Path(kill_file)
         self._redis: Any = None
+        self._capital_weekly_cap_gbp = capital_weekly_cap_gbp
+        self._db_pool = db_pool
+        self._capital_warning_sent = False
+        self._capital_warning_day: str | None = None
+        self._bus: Any = None
 
     async def connect(self) -> None:
         import redis.asyncio as aioredis
@@ -101,3 +114,47 @@ class Monitor:
 
     async def all_provider_rpm(self, provider_names: list[str]) -> dict[str, int]:
         return {p: await self.rpm_this_minute(p) for p in provider_names}
+
+    def set_bus(self, bus: Any) -> None:
+        """Set the message bus for publishing escalations."""
+        self._bus = bus
+
+    async def check_capital_cap_proximity(self) -> None:
+        """Check if capital usage is at/above 80% of weekly cap. Publish escalation if so.
+
+        Warning is published at most once per UTC day. No-op if cap is not set or DB unavailable.
+        """
+        if self._db_pool is None or self._capital_weekly_cap_gbp <= 0:
+            return
+
+        try:
+            from clawbot.capital_ledger import CapitalLedger
+
+            today_str = datetime.now(UTC).date().isoformat()
+            # Reset per-day flag at UTC rollover
+            if self._capital_warning_day != today_str:
+                self._capital_warning_sent = False
+                self._capital_warning_day = today_str
+
+            if not self._capital_warning_sent and self._bus is not None:
+                led = CapitalLedger(self._db_pool)
+                weekly_spent = await led.current_period_total_gbp(
+                    period_hours=168, live_only=True,
+                )
+                fraction = float(weekly_spent) / float(self._capital_weekly_cap_gbp)
+                if fraction >= 0.8:
+                    await self._bus.publish("operator.escalation", {
+                        "severity": "warning",
+                        "summary": (
+                            f"Capital usage at {fraction*100:.0f}% of weekly cap "
+                            f"(£{float(weekly_spent):.2f} / £{self._capital_weekly_cap_gbp:.2f})"
+                        ),
+                        "detail": (
+                            "Set CAPITAL_FREEZE=true in .env to halt all "
+                            "authorizations, or wait for the weekly window to roll over."
+                        ),
+                        "source": "monitor",
+                    })
+                    self._capital_warning_sent = True
+        except Exception as exc:
+            logger.warning("Capital cap proximity check failed: %s", exc)
