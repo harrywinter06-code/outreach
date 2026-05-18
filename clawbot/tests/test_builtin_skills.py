@@ -25,6 +25,11 @@ EXPECTED_BUILTINS = {
     # Phase H — Task 36 support pack
     "support_send_email_reply", "support_assign_ticket", "support_canned_response",
     "chat_widget_respond_live", "calendar_book_slot", "survey_send_nps",
+    # Phase H — Task 28 launch pack
+    "producthunt_schedule", "betalist_submit", "indiehackers_post",
+    "hn_show_submit", "directory_submit_g2", "directory_submit_capterra",
+    "directory_submit_alternative_to", "haro_respond",
+    "prnewswire_submit", "podcast_pitch",
 }
 
 
