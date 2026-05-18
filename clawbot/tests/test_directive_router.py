@@ -142,7 +142,9 @@ async def test_handle_skill_call_threads_stripe_secret_key_to_make_live_ctx():
     ))
     fake_registry.is_canary = MagicMock(return_value=False)
     fake_registry._record_live_call = MagicMock()
-    fake_registry.get_meta = MagicMock(return_value=MagicMock())
+    fake_meta = MagicMock()
+    fake_meta.requires_approval = False  # don't enter approval gate in this test
+    fake_registry.get_meta = MagicMock(return_value=fake_meta)
 
     router = DirectiveRouter(
         bus=bus,
@@ -174,3 +176,106 @@ async def test_handle_skill_call_threads_stripe_secret_key_to_make_live_ctx():
     assert captured_kwargs.get("stripe_secret_key") == "sk_test_THREAD_ME", (
         f"stripe_secret_key not threaded to make_live_ctx; got: {list(captured_kwargs.keys())}"
     )
+
+
+@pytest.mark.asyncio
+async def test_requires_approval_skill_publishes_request_and_blocks_on_denial():
+    """A requires_approval=True skill must publish operator.approval_request,
+    block dispatch, and notify the caller inbox when the operator sends a denial."""
+    from unittest.mock import patch, AsyncMock, MagicMock
+    from pathlib import Path
+
+    published: list[tuple] = []
+    # approval_id captured from the first operator.approval_request publish
+    captured_approval_id: list[str] = []
+
+    bus = MagicMock()
+    bus.ack = AsyncMock()
+    bus.publish_inbox = AsyncMock()
+
+    async def fake_publish(topic, payload):
+        published.append((topic, payload))
+        if topic == "operator.approval_request":
+            captured_approval_id.append(payload["request_id"])
+
+    bus.publish = fake_publish
+
+    # On the first bus.read call, return a denial reply matching the approval_id.
+    async def fake_read(topic, consumer_id, count=10, block_ms=1000):
+        if topic == "operator.approval_reply" and captured_approval_id:
+            return [{"request_id": captured_approval_id[0], "approved": False}]
+        return []
+
+    bus.read = fake_read
+
+    fake_meta = MagicMock()
+    fake_meta.requires_approval = True
+
+    fake_registry = MagicMock()
+    fake_registry.call = AsyncMock()  # must NOT be called on denial
+    fake_registry.is_canary = MagicMock(return_value=False)
+    fake_registry._record_live_call = MagicMock()
+    fake_registry.get_meta = MagicMock(return_value=fake_meta)
+
+    router = DirectiveRouter(
+        bus=bus,
+        causal_store=MagicMock(record_event=AsyncMock()),
+        registry=MagicMock(),
+        agent_factory=MagicMock(),
+        task_store=MagicMock(),
+        metrics_dir=Path("/tmp/test_metrics_approval"),
+        brain=None,
+    )
+
+    from clawbot.skill_ctx import make_noop_ctx
+
+    def fake_make_live_ctx(**kwargs):
+        return make_noop_ctx(caller_id=kwargs["caller_id"], budget_usd=kwargs["budget_usd"])
+
+    with patch("clawbot.skill_ctx.make_live_ctx", side_effect=fake_make_live_ctx), \
+         patch("clawbot.skill_registry.REGISTRY", fake_registry), \
+         patch("clawbot.config.settings") as fake_settings:
+        fake_settings.stripe_secret_key = ""
+        fake_settings.stripe_live_mode_enabled = False
+        fake_settings.capital_daily_cap_gbp = 100.0
+        fake_settings.capital_weekly_cap_gbp = 500.0
+        fake_settings.capital_freeze = False
+        fake_settings.tavily_api_key = ""
+        fake_settings.firecrawl_api_key = ""
+        fake_settings.accounts_vault_key = ""
+        fake_settings.accounts_db_path = "data/accounts.db"
+        fake_settings.imap_host = ""
+        fake_settings.imap_port = 993
+        fake_settings.imap_user = ""
+        fake_settings.imap_password = ""
+        fake_settings.email_domain = ""
+        fake_settings.gumroad_api_key = ""
+        fake_settings.paypal_client_id = ""
+        fake_settings.paypal_client_secret = ""
+        fake_settings.paypal_environment = "sandbox"
+        fake_settings.coinbase_commerce_api_key = ""
+
+        await router._handle_skill_call(
+            skill_name="stripe_issue_card", params={"amount": 100},
+            chain_id="c-approval", from_agent="ceo",
+        )
+
+    # approval_request and escalation must have been published
+    topics = [t for t, _ in published]
+    assert "operator.approval_request" in topics, (
+        f"operator.approval_request not published; published topics: {topics}"
+    )
+    assert "operator.escalation" in topics, (
+        f"operator.escalation not published; published topics: {topics}"
+    )
+
+    # REGISTRY.call must NOT have been invoked (denied)
+    fake_registry.call.assert_not_called()
+
+    # Caller inbox must have received skill_denied or similar error
+    bus.publish_inbox.assert_called_once()
+    _, inbox_payload = bus.publish_inbox.call_args.args
+    assert (
+        inbox_payload.get("kind") == "skill_denied"
+        or inbox_payload.get("error") == "operator did not approve"
+    ), f"Unexpected inbox payload: {inbox_payload}"

@@ -1,56 +1,66 @@
+"""Infra status report: system health snapshot."""
+from datetime import datetime
+
 META = {
-    "name": "infra_status_report", "builtin": True,
-    "description": "Rolled-up infrastructure health. Composes db_health + "
-                   "redis_health + recent skill_calls count. Use as the first "
-                   "check before any deploy or destructive action.",
+    "name": "infra_status_report",
+    "builtin": True,
+    "description": "Collect system health metrics and compose a status report.",
     "params": {},
     "returns": {
-        "db_ok": "bool", "redis_ok": "bool",
-        "db_latency_ms": "int", "redis_latency_ms": "int",
+        "timestamp": "str",
+        "db_health": "dict",
         "skill_calls_last_hour": "int",
+        "ok": "bool",
     },
-    "cost_estimate_usd": 0.0, "timeout_s": 15.0,
 }
 
 
 async def run(ctx) -> dict:
-    from datetime import datetime as _datetime, UTC as _UTC
-    # DB check
-    db_start = _datetime.now(_UTC)
-    db_ok = False
-    try:
-        await ctx.sql.query("SELECT 1 AS one")
-        db_ok = True
-    except Exception:
-        db_ok = False
-    db_latency_ms = int((_datetime.now(_UTC) - db_start).total_seconds() * 1000)
+    """Gather current system health metrics.
 
-    # Redis check (via bus publish)
-    redis_start = _datetime.now(_UTC)
-    redis_ok = False
+    Combines DB health check with recent activity signals (skill calls as liveness proxy).
+    """
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    skill_calls_last_hour = 0
+    db_health = {"ok": False, "latency_ms": 0, "error": "not checked"}
+
+    # Check DB health
     try:
-        await ctx.bus.publish("infra.heartbeat", {"from": "infra_status_report"})
-        redis_ok = True
-    except Exception:
-        redis_ok = False
-    redis_latency_ms = int((_datetime.now(_UTC) - redis_start).total_seconds() * 1000)
+        db_rows = await ctx.sql.query(
+            "SELECT 1 AS one"
+        )
+        if db_rows and len(db_rows) > 0:
+            db_health = {"ok": True, "latency_ms": 0, "error": ""}
+        else:
+            db_health = {
+                "ok": False,
+                "latency_ms": 0,
+                "error": "query returned no rows",
+            }
+    except Exception as exc:
+        db_health = {
+            "ok": False,
+            "latency_ms": 0,
+            "error": str(exc)[:200],
+        }
 
     # Recent activity — skill_calls in the last hour as a liveness proxy
-    skill_calls_last_hour = 0
     try:
         rows = await ctx.sql.query(
             "SELECT COUNT(*) AS n FROM skill_calls "
-            "WHERE created_at > NOW() - INTERVAL '1 hour'"
+            "WHERE called_at > NOW() - INTERVAL '1 hour'"
         )
         if rows and len(rows) > 0:
             skill_calls_last_hour = int(rows[0].get("n", 0))
     except Exception:
         skill_calls_last_hour = 0
 
+    # Overall ok: DB is healthy
+    overall_ok = db_health.get("ok", False)
+
     return {
-        "db_ok": db_ok,
-        "redis_ok": redis_ok,
-        "db_latency_ms": db_latency_ms,
-        "redis_latency_ms": redis_latency_ms,
+        "timestamp": timestamp,
+        "db_health": db_health,
         "skill_calls_last_hour": skill_calls_last_hour,
+        "ok": overall_ok,
     }

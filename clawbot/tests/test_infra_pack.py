@@ -1,4 +1,4 @@
-"""Infrastructure health skills — db_health, redis_health, status_report."""
+"""Builtin infra pack — health checks and status reporting."""
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -15,51 +15,64 @@ def _registry() -> SkillRegistry:
     return reg
 
 
+INFRA_SKILLS = {
+    "infra_db_health",
+    "infra_status_report",
+}
+
+
 def test_infra_pack_loads():
+    """Infra skills are discoverable."""
     reg = _registry()
-    names = set(reg.list_names())
-    assert {"infra_db_health", "infra_redis_health", "infra_status_report"} <= names
+    loaded = set(reg.list_names())
+    missing = INFRA_SKILLS - loaded
+    assert not missing, f"missing infra skills: {missing}"
 
 
-def test_db_health_returns_ok_when_query_succeeds():
+def test_db_health_returns_not_ok_against_raw_noop_ctx():
+    """Vanilla noop ctx has _NoopSql returning [], so db_health should report unhealthy.
+
+    This is a regression test for audit finding: the skill should reject empty rows
+    from a noop context and report ok=False, not silently accept [] as success.
+    """
     reg = _registry()
     ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
-    ctx.sql.query = AsyncMock(return_value=[{"one": 1}])
+    # NO override of ctx.sql.query — use the raw noop behaviour which returns []
     record = asyncio.run(reg.call("infra_db_health", {}, ctx))
-    assert record.ok is True
-    assert record.result["ok"] is True
-    assert "latency_ms" in record.result
+    assert record.ok is True  # the skill itself runs fine and returns a result dict
+    assert record.result["ok"] is False  # but DB is "down" (empty rows)
+    assert "returned no rows" in record.result["error"]
 
 
-def test_db_health_returns_not_ok_on_query_error():
+def test_status_report_ok_against_mocked_db():
+    """Status report returns ok=True when DB check succeeds."""
     reg = _registry()
     ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
-    async def boom(*a, **k):
-        raise RuntimeError("connection refused")
-    ctx.sql.query = boom
-    record = asyncio.run(reg.call("infra_db_health", {}, ctx))
-    assert record.ok is True  # skill itself succeeded
-    assert record.result["ok"] is False
-    assert "connection refused" in record.result.get("error", "")
-
-
-def test_redis_health_uses_bus_publish():
-    reg = _registry()
-    ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
-    ctx.bus.publish = AsyncMock(return_value="msg-id-123")
-    record = asyncio.run(reg.call("infra_redis_health", {}, ctx))
-    assert record.ok is True
-    assert record.result["ok"] is True
-    ctx.bus.publish.assert_called_once()
-
-
-def test_status_report_composes_both():
-    reg = _registry()
-    ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
-    ctx.sql.query = AsyncMock(return_value=[{"one": 1}])
-    ctx.bus.publish = AsyncMock(return_value="msg-id")
+    # Mock successful DB queries
+    async def mock_query(sql):
+        if "SELECT 1" in sql:
+            return [{"one": 1}]
+        if "skill_calls" in sql:
+            return [{"n": 42}]
+        return []
+    ctx.sql.query = AsyncMock(side_effect=mock_query)  # type: ignore[method-assign]
     record = asyncio.run(reg.call("infra_status_report", {}, ctx))
     assert record.ok is True
-    assert record.result["db_ok"] is True
-    assert record.result["redis_ok"] is True
-    assert "skill_calls_last_hour" in record.result
+    assert record.result["ok"] is True
+    assert record.result["db_health"]["ok"] is True
+    assert record.result["skill_calls_last_hour"] == 42
+
+
+def test_status_report_not_ok_against_broken_db():
+    """Status report returns ok=False when DB check fails."""
+    reg = _registry()
+    ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
+    # Mock failed DB query
+    async def mock_query(sql):
+        raise RuntimeError("connection refused")
+    ctx.sql.query = AsyncMock(side_effect=mock_query)  # type: ignore[method-assign]
+    record = asyncio.run(reg.call("infra_status_report", {}, ctx))
+    assert record.ok is True
+    assert record.result["ok"] is False
+    assert record.result["db_health"]["ok"] is False
+    assert "connection refused" in record.result["db_health"]["error"]

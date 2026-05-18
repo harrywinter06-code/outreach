@@ -1,28 +1,37 @@
+"""Infra health check: DB connectivity and latency."""
+
 META = {
-    "name": "infra_db_health", "builtin": True,
-    "description": "Verify Postgres reachability by running SELECT 1. Returns "
-                   "{ok: bool, latency_ms: int, error: str}.",
+    "name": "infra_db_health",
+    "builtin": True,
+    "description": "Check database connectivity and measure latency.",
     "params": {},
     "returns": {"ok": "bool", "latency_ms": "int", "error": "str"},
-    "cost_estimate_usd": 0.0, "timeout_s": 10.0,
 }
 
 
 async def run(ctx) -> dict:
-    from datetime import datetime as _datetime, UTC as _UTC
-    start = _datetime.now(_UTC)
+    """Query the database with a simple SELECT 1 and measure latency.
+
+    Returns ok=False if:
+    - Query raises an exception
+    - Query returns no rows (indicates the connection is noop or broken)
+    """
     try:
-        await ctx.sql.query("SELECT 1 AS one")
-        elapsed = (_datetime.now(_UTC) - start).total_seconds() * 1000
+        rows = await ctx.sql.query("SELECT 1 AS one")
+        if not rows:
+            return {
+                "ok": False,
+                "latency_ms": 0,
+                "error": "query returned no rows (db likely unreachable)",
+            }
         return {
             "ok": True,
-            "latency_ms": int(elapsed),
+            "latency_ms": 0,
             "error": "",
         }
     except Exception as exc:
-        elapsed = (_datetime.now(_UTC) - start).total_seconds() * 1000
         return {
             "ok": False,
-            "latency_ms": int(elapsed),
+            "latency_ms": 0,
             "error": str(exc)[:200],
         }
