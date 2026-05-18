@@ -227,6 +227,24 @@ class SkillRegistry:
                         ok=False,
                         error=f"missing return field: {missing_fields[0]}",
                     )
+                # Z3.5: skills that silently degrade by returning {"ok": False, ...}
+                # were being recorded as ok=true (because they didn't raise and
+                # returned a dict with all META fields). The substrate then
+                # marked the cycle as an artifact and reset stall, hallucinating
+                # progress. Honor the inner `ok` field as authoritative when
+                # the skill declares it in META.returns.
+                elif "ok" in result and result.get("ok") is False:
+                    record = SkillCallRecord(
+                        skill_name=name,
+                        caller_id=ctx.caller_id,
+                        params=params,
+                        result=result,
+                        cost_usd=0.0,
+                        latency_ms=elapsed_ms,
+                        ok=False,
+                        error=str(result.get("error") or result.get("reason")
+                                  or "skill returned ok=False (silent degradation)"),
+                    )
                 else:
                     record = SkillCallRecord(
                         skill_name=name,

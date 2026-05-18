@@ -274,6 +274,127 @@ async def test_cycle_pre_validates_action_and_stalls_on_missing_param(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_cycle_does_not_credit_artifact_when_skill_silently_failed(monkeypatch):
+    """Z3.5 critical regression: a publisher returning {"ok": False, ...}
+    with no credentials used to credit artifact + reset stall. Now the
+    cycle runner polls skill_calls; if no successful row materialises,
+    stall increments and the LLM sees the failure next cycle."""
+    from clawbot.business_cycle_runner import BusinessCycleRunner
+    from clawbot import skill_registry as sr
+
+    # Registry needs the dispatched action to exist so pre-validate passes
+    class _Meta:
+        timeout_s = 10
+        returns = {"ok": "bool", "url": "str"}
+        cost_estimate_usd = 0.0
+
+    class _FakeSkill:
+        meta = _Meta()
+        async def run(self, ctx, title: str, body_markdown: str) -> dict:
+            return {"ok": False, "url": ""}
+
+    class _FakeRegistry:
+        def __init__(self):
+            self._skills = {"dev_to_publish": _FakeSkill()}
+            self._stats_db = None
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+
+    # Pool that always returns "no skill_calls row found" — simulates the
+    # silently-failed publish (registry's call hasn't recorded anything new)
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)  # poll always finds nothing
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+
+    store = MagicMock()
+    store._pool = pool
+    store.update_metadata = AsyncMock()
+    store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
+    llm = MagicMock()
+    llm.complete = AsyncMock(return_value=json.dumps({
+        "action": "dev_to_publish", "title": "X", "body_markdown": "...",
+    }))
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    runner = BusinessCycleRunner(
+        store=store, llm_pool=llm, bus=bus, load_skill_catalog=lambda: [],
+    )
+    # Make the poll fast so the test doesn't take 8s
+    biz = _make_business()
+    # Patch the helper's wait/poll defaults for speed
+    original = runner._await_skill_success
+    async def fast_await(**kwargs):
+        return await original(**{**kwargs, "max_wait_s": 0.2, "poll_s": 0.05})
+    runner._await_skill_success = fast_await
+    produced = await runner.run_one_cycle(biz)
+    assert produced is False, (
+        "must NOT credit artifact when no successful skill_calls row appeared"
+    )
+    bus.publish.assert_called_once()  # dispatch DID happen
+    # Stall must have incremented
+    update_call = store.update_metadata.call_args
+    assert update_call.kwargs["updates"]["artifact_stall_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cycle_credits_artifact_when_successful_skill_row_appears(monkeypatch):
+    """Inverse: if the poll finds a successful row, mark artifact as before."""
+    from clawbot.business_cycle_runner import BusinessCycleRunner
+    from clawbot import skill_registry as sr
+
+    class _Meta:
+        timeout_s = 10
+        returns = {"ok": "bool", "url": "str"}
+        cost_estimate_usd = 0.0
+
+    class _FakeSkill:
+        meta = _Meta()
+        async def run(self, ctx, title: str, body_markdown: str) -> dict:
+            return {"ok": True, "url": "https://posted"}
+
+    class _FakeRegistry:
+        def __init__(self):
+            self._skills = {"dev_to_publish": _FakeSkill()}
+            self._stats_db = None
+
+    monkeypatch.setattr(sr, "REGISTRY", _FakeRegistry())
+
+    pool = MagicMock()
+    conn = MagicMock()
+    # Poll finds a successful row immediately
+    conn.fetchrow = AsyncMock(return_value={"id": 99, "ok": True})
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+
+    store = MagicMock()
+    store._pool = pool
+    store.update_metadata = AsyncMock()
+    store.update_fitness = AsyncMock()
+    store.recent_skill_calls = AsyncMock(return_value=[])
+    llm = MagicMock()
+    llm.complete = AsyncMock(return_value=json.dumps({
+        "action": "dev_to_publish", "title": "X", "body_markdown": "...",
+    }))
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    runner = BusinessCycleRunner(
+        store=store, llm_pool=llm, bus=bus, load_skill_catalog=lambda: [],
+    )
+    biz = _make_business()
+    produced = await runner.run_one_cycle(biz)
+    assert produced is True
+    update_call = store.update_metadata.call_args
+    assert update_call.kwargs["updates"]["artifact_stall_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_cycle_loads_recent_skill_calls_into_prompt(monkeypatch):
     """The LLM must see its own prior failures. run_one_cycle calls
     store.recent_skill_calls and passes the result to the renderer."""

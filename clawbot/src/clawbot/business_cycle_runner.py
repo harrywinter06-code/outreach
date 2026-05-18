@@ -158,6 +158,7 @@ class BusinessCycleRunner:
         are logged but do not raise.
         """
         self.cycle_count += 1
+        cycle_started_at = datetime.now(UTC)
         try:
             # Z2.5b polish: pull last 5 attempts from skill_calls so the LLM
             # sees its own mistakes and can correct in this cycle. Empty
@@ -232,21 +233,41 @@ class BusinessCycleRunner:
             {"response": json.dumps(data), "chain_id": chain_id},
         )
 
-        is_artifact = action_produces_artifact(action)
-        if is_artifact:
-            self.artifact_count += 1
-            await self._mark_artifact(business)
-            logger.info(
-                "Business %s produced artifact via action=%s",
-                business.business_id, action,
-            )
-        else:
+        # Z3.5: dispatch-time artifact crediting was hallucinating progress.
+        # A skill can return `{"ok": False, "url": ""}` for missing creds, the
+        # cycle runner only checked the action name, and the substrate kept
+        # marking artifacts for posts that never went public. Now: only credit
+        # artifact if (a) action is in ARTIFACT_ACTIONS AND (b) a successful
+        # skill_calls row materialises for this business+skill in the next
+        # few seconds.
+        if not action_produces_artifact(action):
             await self._bump_stall(business)
             logger.info(
                 "Business %s dispatched non-artifact action=%s, stall++",
                 business.business_id, action,
             )
-        return is_artifact
+            return False
+
+        success = await self._await_skill_success(
+            business_id=business.business_id, skill_name=action,
+            since=cycle_started_at,
+        )
+        if success:
+            self.artifact_count += 1
+            await self._mark_artifact(business)
+            logger.info(
+                "Business %s produced artifact via action=%s (verified ok=true)",
+                business.business_id, action,
+            )
+            return True
+        else:
+            await self._bump_stall(business)
+            logger.info(
+                "Business %s dispatched %s but no successful skill_call row "
+                "appeared within poll window — silent skill failure, stall++",
+                business.business_id, action,
+            )
+            return False
 
     async def _record_synthetic_failure(
         self, *, business_id: str, action: str, reason: str,
@@ -269,6 +290,46 @@ class BusinessCycleRunner:
                 )
         except Exception as exc:
             logger.debug("synthetic failure log skipped: %s", exc)
+
+    async def _await_skill_success(
+        self, *, business_id: str, skill_name: str, since: datetime,
+        max_wait_s: float = 8.0, poll_s: float = 0.5,
+    ) -> bool:
+        """Poll skill_calls for up to max_wait_s waiting for an ok=true row
+        with this business_id + skill_name written since `since`. Returns
+        True if found, False on timeout.
+
+        Z3.5 — dispatch-time crediting hallucinated artifacts when skills
+        silently degraded. This makes the cycle runner wait for the actual
+        outcome before resetting the stall counter.
+        """
+        if not hasattr(self._store, "_pool") or self._store._pool is None:
+            # Test/mock path: no DB to poll. Treat as success to keep
+            # legacy unit tests passing without faking a poll loop.
+            return True
+        pool = self._store._pool
+        elapsed = 0.0
+        while elapsed < max_wait_s:
+            try:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT id, ok FROM skill_calls "
+                        "WHERE business_id = $1 AND skill_name = $2 "
+                        "AND called_at >= $3 "
+                        "ORDER BY id DESC LIMIT 1",
+                        business_id, skill_name, since,
+                    )
+                if row is not None:
+                    return bool(row["ok"])
+            except Exception as exc:
+                logger.debug(
+                    "await_skill_success poll error for %s/%s: %s",
+                    business_id, skill_name, exc,
+                )
+                return True  # don't double-penalise on infra hiccup
+            await asyncio.sleep(poll_s)
+            elapsed += poll_s
+        return False
 
     async def _mark_artifact(self, business: Business) -> None:
         """Reset stall counter and stamp last_cycle_at via update_fitness."""

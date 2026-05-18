@@ -122,18 +122,24 @@ def test_newsletter_send_uses_subscriber_csv():
 
 
 def test_medium_publish_no_creds_returns_failure():
+    """Z3.5: silent-degradation pattern was hallucinating success at the
+    registry layer. Now an inner ok=False propagates to record.ok=False
+    so the cycle runner sees a real failure and the LLM can correct."""
     reg = _registry()
     ctx = make_noop_ctx(caller_id="t", budget_usd=0)
     record = asyncio.run(reg.call("medium_publish", {
         "title": "T", "body_markdown": "B",
     }, ctx))
-    assert record.ok, record.error
+    assert record.ok is False, "missing creds must surface as record.ok=False"
+    assert "ok=False" in (record.error or "") or record.error
     assert record.result["ok"] is False
 
 
 def test_bluesky_post_no_creds_returns_failure():
+    """Same as medium: missing creds → record.ok=False, not silent success."""
     reg = _registry()
     ctx = make_noop_ctx(caller_id="t", budget_usd=0)
     record = asyncio.run(reg.call("bluesky_post", {"text": "hi"}, ctx))
-    assert record.ok, record.error
+    assert record.ok is False, "missing creds must surface as record.ok=False"
+    assert "ok=False" in (record.error or "") or record.error
     assert record.result["ok"] is False

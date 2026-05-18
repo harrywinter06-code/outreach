@@ -72,6 +72,46 @@ def test_registry_records_unknown_skill_failure_to_stats_db(skills_dir: Path):
     assert args[7] == "biz_x", "business_id must be the last positional arg"
 
 
+def test_registry_treats_inner_ok_false_as_failure(tmp_path: Path):
+    """Z3.5: skills that silently degrade by returning {"ok": False, ...}
+    were being recorded as ok=true (call didn't raise, dict had all META
+    fields). Now the inner ok must be honored as authoritative — otherwise
+    the cycle runner keeps hallucinating artifacts for posts that never
+    happened (e.g. dev_to_publish with no DEVTO_API_KEY)."""
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "fake_publish.py").write_text("""
+META = {"name": "fake_publish", "description": "p",
+        "params": {}, "returns": {"ok": "bool", "url": "str"}}
+async def run(ctx):
+    return {"ok": False, "url": "", "error": "creds missing"}
+""")
+    reg = SkillRegistry(skills_dir=d)
+    reg.discover()
+    ctx = make_noop_ctx(caller_id="t", budget_usd=0.0)
+    record = asyncio.run(reg.call("fake_publish", {}, ctx))
+    assert record.ok is False
+    assert "creds missing" in (record.error or "")
+
+
+def test_registry_treats_inner_ok_true_as_success(tmp_path: Path):
+    """Inverse: a skill explicitly returning ok=True must still be ok=true."""
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "fake_pub_ok.py").write_text("""
+META = {"name": "fake_pub_ok", "description": "p",
+        "params": {}, "returns": {"ok": "bool", "url": "str"}}
+async def run(ctx):
+    return {"ok": True, "url": "https://posted"}
+""")
+    reg = SkillRegistry(skills_dir=d)
+    reg.discover()
+    ctx = make_noop_ctx(caller_id="t", budget_usd=0.0)
+    record = asyncio.run(reg.call("fake_pub_ok", {}, ctx))
+    assert record.ok is True
+    assert record.error is None
+
+
 def test_registry_records_missing_param_failure_to_stats_db(skills_dir: Path):
     """Same fix for the missing-param early-return path."""
     from unittest.mock import AsyncMock, MagicMock

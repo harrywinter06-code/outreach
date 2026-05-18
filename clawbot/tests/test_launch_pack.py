@@ -76,7 +76,9 @@ def test_podcast_pitch_no_contact_returns_false():
         "show_name": "Indie Pod", "show_url": "https://example.com",
         "guest_name": "C", "guest_bio": "bio", "topic": "topic",
     }, ctx))
-    assert record.ok is True
+    # Z3.5: inner ok=False now propagates to record.ok=False (silent
+    # degradation no longer hallucinates success at the registry).
+    assert record.ok is False
     assert record.result["ok"] is False
     assert record.result["contact_email"] == ""
 

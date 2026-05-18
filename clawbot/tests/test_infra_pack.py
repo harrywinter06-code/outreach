@@ -39,8 +39,11 @@ def test_db_health_returns_not_ok_against_raw_noop_ctx():
     ctx = make_noop_ctx(caller_id="cto", budget_usd=0)
     # NO override of ctx.sql.query — use the raw noop behaviour which returns []
     record = asyncio.run(reg.call("infra_db_health", {}, ctx))
-    assert record.ok is True  # the skill itself runs fine and returns a result dict
-    assert record.result["ok"] is False  # but DB is "down" (empty rows)
+    # Z3.5: inner ok=False now propagates — the skill's own assessment
+    # (DB unreachable → ok=False) is authoritative, not silently masked
+    # as a successful run that "happened to return" ok=False.
+    assert record.ok is False
+    assert record.result["ok"] is False  # DB is "down" (empty rows)
     assert "returned no rows" in record.result["error"]
 
 
@@ -72,7 +75,8 @@ def test_status_report_not_ok_against_broken_db():
         raise RuntimeError("connection refused")
     ctx.sql.query = AsyncMock(side_effect=mock_query)  # type: ignore[method-assign]
     record = asyncio.run(reg.call("infra_status_report", {}, ctx))
-    assert record.ok is True
+    # Z3.5: inner ok=False propagates — broken DB → record.ok=False.
+    assert record.ok is False
     assert record.result["ok"] is False
     assert record.result["db_health"]["ok"] is False
     assert "connection refused" in record.result["db_health"]["error"]

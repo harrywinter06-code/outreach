@@ -61,7 +61,10 @@ def test_email_send_cold_blocks_suppressed():
     rec = asyncio.run(reg.call("email_send_cold", {
         "to": "x@y.com", "subject": "hi", "body_text": "hello",
     }, ctx))
-    assert rec.ok, rec.error
+    # Z3.5: suppressed sends now return record.ok=False — they're
+    # blocked-on-purpose but they're not a successful send. The skill's
+    # inner ok=False is now treated as authoritative.
+    assert rec.ok is False
     assert rec.result["suppressed"] is True
     assert rec.result["ok"] is False
     ctx.email.send.assert_not_called()
