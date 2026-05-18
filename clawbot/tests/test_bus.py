@@ -61,6 +61,35 @@ async def test_read_returns_parsed_payloads(bus: MessageBus):
 
 
 @pytest.mark.asyncio
+async def test_read_auto_subscribes_on_nogroup(bus: MessageBus):
+    """If the consumer group doesn't exist, read() creates it and retries.
+    Without this, any topic not enumerated in main.py's subscribe loop
+    (e.g. operator.approval_reply) crashes _LiveOperator.request_approval."""
+    payload = {"approved": True, "request_id": "abc"}
+    raw_entry = [
+        ("1-0", {"payload": json.dumps(payload), "ts": "2026-01-01T00:00:00+00:00"}),
+    ]
+    bus._r.xgroup_create = AsyncMock()
+    bus._r.xreadgroup = AsyncMock(side_effect=[
+        Exception("NOGROUP No such key 'clawbot:bus:operator.approval_reply'"),
+        [("clawbot:bus:operator.approval_reply", raw_entry)],
+    ])
+    messages = await bus.read("operator.approval_reply", consumer_id="approval-abc")
+    assert len(messages) == 1
+    assert messages[0]["approved"] is True
+    bus._r.xgroup_create.assert_called_once()
+    assert bus._r.xreadgroup.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_reraises_non_nogroup_errors(bus: MessageBus):
+    """ConnectionError is fatal — must not silently retry."""
+    bus._r.xreadgroup = AsyncMock(side_effect=ConnectionError("redis down"))
+    with pytest.raises(ConnectionError):
+        await bus.read("ceo.directive", consumer_id="ceo-1")
+
+
+@pytest.mark.asyncio
 async def test_read_returns_empty_when_no_messages(bus: MessageBus):
     bus._r.xreadgroup = AsyncMock(return_value=None)
     messages = await bus.read("ceo.directive", consumer_id="ceo-1")

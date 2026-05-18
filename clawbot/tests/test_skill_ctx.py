@@ -71,6 +71,34 @@ def test_live_ctx_passes_caller_id():
     assert ctx.caller_id == "worker-1"
     assert ctx.budget_usd == 0.50
 
+def test_live_operator_message_publishes_to_bus_without_escalation_object():
+    """_LiveOperator.message must NOT call escalation.notify (the router
+    passes escalation=None into make_live_ctx, so the old `self._esc.notify`
+    path crashed with AttributeError). Route via the bus-publish path that
+    the EscalationStore subscriber consumes."""
+    from clawbot.skill_ctx import _LiveOperator
+    bus = MagicMock()
+    bus.publish = AsyncMock(return_value="msg-id")
+    op = _LiveOperator(escalation=None, bus=bus, caller_id="cmo")
+    asyncio.run(op.message("first sale fired", level="info"))
+    bus.publish.assert_called_once()
+    topic, payload = bus.publish.call_args.args
+    assert topic == "operator.escalation"
+    assert payload["from_agent"] == "cmo"
+    assert payload["summary"] == "first sale fired"
+    assert payload["severity"] == "info"
+
+
+def test_live_operator_message_coerces_unknown_level_to_info():
+    from clawbot.skill_ctx import _LiveOperator
+    bus = MagicMock()
+    bus.publish = AsyncMock(return_value="msg-id")
+    op = _LiveOperator(escalation=None, bus=bus, caller_id="cto")
+    asyncio.run(op.message("hello", level="chatty"))
+    payload = bus.publish.call_args.args[1]
+    assert payload["severity"] == "info"
+
+
 def test_live_secret_rejects_non_allowlisted():
     ctx = make_live_ctx(
         caller_id="w", budget_usd=0,

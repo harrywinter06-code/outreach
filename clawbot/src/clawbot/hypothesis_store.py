@@ -19,7 +19,7 @@ class HypothesisStore:
 
     async def init_schema(self) -> None:
         """No-op — schema lives in db.Database.init_schema (single source of truth).
-        Kept for API stability with callers like maybe_seed_h1."""
+        Kept for API stability with callers like maybe_seed_initial_hypothesis."""
         return None
 
     async def add_hypothesis(

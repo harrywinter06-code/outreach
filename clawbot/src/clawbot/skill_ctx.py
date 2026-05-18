@@ -608,12 +608,23 @@ class _LiveTime:
 
 class _LiveOperator:
     def __init__(self, escalation: Any, bus: Any, caller_id: str) -> None:
+        # escalation kept for backwards-compat with constructors that still
+        # pass it; the message path always goes through the bus so the
+        # EscalationStore subscriber persists + pushes uniformly.
         self._esc = escalation
         self._bus = bus
         self._caller = caller_id
 
     async def message(self, text: str, *, level: str = "info") -> None:
-        await self._esc.notify(text, level=level, source=self._caller)
+        # Bus-publish via escalate() — same path the scheduler's escalation
+        # subscriber consumes. Decouples skills from any in-process escalation
+        # object (router constructs make_live_ctx with escalation=None).
+        from clawbot.escalation import escalate
+        severity = level if level in ("info", "request", "warning", "urgent") else "info"
+        await escalate(
+            bus=self._bus, severity=severity,
+            summary=text[:300], detail=text, from_agent=self._caller,
+        )
 
     async def request_approval(self, prompt: str, *, timeout_s: float = 3600) -> bool:
         import uuid as _uuid

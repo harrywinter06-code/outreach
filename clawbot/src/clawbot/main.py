@@ -27,22 +27,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def maybe_seed_h1(store) -> bool:
-    """Insert the initial H1 hypothesis if none is active. Returns True if seeded."""
+async def maybe_seed_initial_hypothesis(store) -> bool:
+    """Insert the initial hypothesis if none is active. Returns True if seeded."""
     current = await store.get_active()
     if current is not None:
         return False
     await store.set_active(
-        name="H1",
+        name="H2",
         description=(
-            "£9 IR35 contractor status assessment PDF sold on Gumroad. "
-            "Distribution via Substack newsletter and LinkedIn. "
-            "Operator (Harry) creates the Gumroad product manually; "
-            "agents do drafting and distribution."
+            "Autonomous UK micro-tool funnel. Agents pick a UK-niche question "
+            "with measurable search demand (council tax band, IR35 status, "
+            "mortgage affordability, student loan plan), generate an LLM-backed "
+            "free assessment + paid £3-5 personalised report, fulfilled-on-demand "
+            "via email after Stripe payment-link checkout. Distribution via "
+            "Dev.to + Medium + Bluesky + Mastodon (no operator account dependency). "
+            "Agent owns the full loop end-to-end: niche selection, copy, "
+            "publishing, Stripe payment link, fulfilment. Operator's only role "
+            "is the one-time Stripe live-mode KYB + domain purchase already "
+            "documented in operating_facts.md."
         ),
         kill_criteria={
-            "max_days_without_revenue": 14,
-            "min_qualified_leads_by_day": [7, 3],
+            "max_days_without_revenue": 21,
+            "min_unique_visitors_by_day": [7, 50],
+            "min_email_captures_by_day": [14, 5],
         },
     )
     return True
@@ -112,8 +119,8 @@ async def main() -> None:
     from clawbot.hypothesis_store import HypothesisStore
     hyp_store = HypothesisStore(db.pool, max_active=settings.max_active_hypotheses)
     await hyp_store.init_schema()
-    if await maybe_seed_h1(hyp_store):
-        logger.info("Seeded initial hypothesis H1")
+    if await maybe_seed_initial_hypothesis(hyp_store):
+        logger.info("Seeded initial hypothesis")
 
     causal_store = CausalStore(pool=db.pool)
     task_store = TaskStore(tasks_dir=METRICS_DIR / "tasks")

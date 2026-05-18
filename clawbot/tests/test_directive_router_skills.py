@@ -85,6 +85,28 @@ async def test_router_publishes_skill_error_to_inbox(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_router_strips_framing_fields_before_skill_call(tmp_path):
+    """`dashboard_widget`, `priority`, `escalate`, `next_wakeup_s` must NOT
+    leak into the skill's run() kwargs — they are SOUL-prompt framing fields
+    consumed by the scheduler, not skill params."""
+    router, _ = _make_router_with_skill(tmp_path)
+    handler = router._get_handler("weather_check")
+    assert handler is not None
+    data = {
+        "action": "weather_check",
+        "city": "London",
+        "dashboard_widget": {"id": "x", "type": "text", "title": "y", "content": "z"},
+        "priority": "high",
+        "escalate": False,
+        "next_wakeup_s": 600,
+    }
+    await handler(data, "chain-fr", "ceo")
+    router._bus.publish_inbox.assert_called_once()
+    target, payload = router._bus.publish_inbox.call_args.args
+    assert payload["ok"] is True, f"skill should succeed; got: {payload!r}"
+
+
+@pytest.mark.asyncio
 async def test_hardcoded_handler_wins_over_skill(tmp_path):
     """A hardcoded action name must NOT be shadowed by a same-named skill."""
     skills_dir = tmp_path / "skills"

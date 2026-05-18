@@ -156,7 +156,12 @@ class DirectiveRouter:
         if REGISTRY is not None and REGISTRY.get_meta(action) is not None:
             async def _wrapper(data: dict, chain_id: str, from_agent: str) -> None:
                 # Skills consume the whole `data` minus framing fields as params.
-                framing = {"action", "directive", "priority", "next_wakeup_s", "escalate"}
+                # `dashboard_widget` is a sibling-of-action field consumed by the
+                # scheduler's widget upserter — never a skill kwarg.
+                framing = {
+                    "action", "directive", "priority", "next_wakeup_s",
+                    "escalate", "dashboard_widget",
+                }
                 params = {k: v for k, v in data.items() if k not in framing}
                 await self._handle_skill_call(action, params, chain_id, from_agent)
             return _wrapper

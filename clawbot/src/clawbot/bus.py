@@ -63,14 +63,31 @@ class MessageBus:
         """
         Read new messages for this consumer. Returns parsed payload dicts.
         Blocks up to block_ms if no messages are ready.
+
+        Auto-subscribes (creates the consumer group + empty stream) on the
+        first NOGROUP error and retries once. This lets ad-hoc topics created
+        by skills (e.g. operator.approval_reply) work without main.py having
+        to enumerate every possible topic up front.
         """
-        results = await self._r.xreadgroup(
-            CONSUMER_GROUP,
-            consumer_id,
-            {_stream(topic): ">"},
-            count=count,
-            block=block_ms,
-        )
+        try:
+            results = await self._r.xreadgroup(
+                CONSUMER_GROUP,
+                consumer_id,
+                {_stream(topic): ">"},
+                count=count,
+                block=block_ms,
+            )
+        except Exception as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            await self.subscribe(topic)
+            results = await self._r.xreadgroup(
+                CONSUMER_GROUP,
+                consumer_id,
+                {_stream(topic): ">"},
+                count=count,
+                block=block_ms,
+            )
         messages = []
         if results:
             for _, entries in results:
