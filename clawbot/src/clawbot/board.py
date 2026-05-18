@@ -219,11 +219,15 @@ Output ONLY JSON in this shape, no preamble:
 """
 
 
-async def generate_hypothesis_from_pivot(
+async def generate_hypothesis_for_portfolio(
     *, pool, store, previous_name: str, previous_description: str, pivot_rationale: str,
+    max_active: int = 3,
 ) -> str:
-    """LLM-generate a new hypothesis based on the board's pivot rationale and
-    write it to the active_hypothesis store. Returns the new hypothesis_id."""
+    """LLM-generate a new hypothesis. If portfolio has capacity, ADD to it.
+    If portfolio is at cap, the LOWEST-WEIGHT active hypothesis is killed
+    and the new one takes its slot.
+
+    Returns the new hypothesis_id."""
     messages = [
         {"role": "system", "content": "You are the board of an autonomous AI company. Output only valid JSON."},
         {"role": "user", "content": GENERATE_HYPOTHESIS_PROMPT.format(
@@ -234,8 +238,23 @@ async def generate_hypothesis_from_pivot(
     ]
     raw = await pool.complete(messages, tier="executive", max_tokens=600)
     data = json.loads(raw)
-    return await store.set_active(
+
+    # If portfolio is full, kill the lowest-weight active row to make room.
+    portfolio = await store.get_active_portfolio()
+    if len(portfolio) >= max_active:
+        lowest = min(portfolio, key=lambda h: float(h["weight"]))
+        await store.kill_hypothesis_by_id(
+            hypothesis_id=lowest["hypothesis_id"],
+            reason=f"replaced by board PIVOT (rationale: {pivot_rationale[:200]})",
+        )
+
+    return await store.add_hypothesis(
         name=str(data["name"])[:40],
         description=str(data["description"])[:400],
         kill_criteria=data.get("kill_criteria", {}),
+        weight=1.0 / max_active,  # equal-weight by default; can be tuned
     )
+
+
+# Backwards-compat alias for any pre-portfolio callers
+generate_hypothesis_from_pivot = generate_hypothesis_for_portfolio

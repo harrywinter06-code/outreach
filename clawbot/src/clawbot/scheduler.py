@@ -386,18 +386,27 @@ class Scheduler:
         active_hyp_block = ""
         try:
             if hasattr(self, "_db_pool") and self._db_pool is not None:
-                hyp_store = HypothesisStore(self._db_pool)
-                active = await hyp_store.get_active()
-                if active is not None:
-                    active_hyp_block = (
-                        f"\n\nACTIVE HYPOTHESIS ({active['name']}): {active['description']}\n"
-                        f"Kill criteria: {active['kill_criteria']}\n"
-                        "Every decision you make must serve this hypothesis. If you believe "
-                        "the kill criteria are met or the bet is broken, escalate to the board "
-                        "for a PIVOT vote.\n"
+                hyp_store = HypothesisStore(
+                    self._db_pool, max_active=settings.max_active_hypotheses,
+                )
+                portfolio = await hyp_store.get_active_portfolio()
+                if portfolio:
+                    lines = ["ACTIVE HYPOTHESIS PORTFOLIO (allocate attention by weight):"]
+                    for h in portfolio:
+                        lines.append(
+                            f"- {h['name']} (weight {h['weight']:.2f}, "
+                            f"progress {h['progress_score']:.2f}): {h['description']}"
+                        )
+                        lines.append(f"  Kill criteria: {h['kill_criteria']}")
+                    lines.append(
+                        "Every decision you make must serve ONE of these bets. "
+                        "When proposing actions, name which hypothesis the action targets. "
+                        "If any bet's kill criteria are met, escalate to the board for that "
+                        "specific hypothesis to be PIVOTed."
                     )
+                    active_hyp_block = "\n\n" + "\n".join(lines) + "\n"
         except Exception as exc:
-            logger.warning("Active hypothesis load failed (continuing): %s", exc)
+            logger.warning("Active hypothesis portfolio load failed (continuing): %s", exc)
         catalog_block = ""
         try:
             from clawbot.skill_catalog_renderer import render_for_role
@@ -1332,16 +1341,20 @@ class Scheduler:
                 logger.info("Board resolution cached: %s", self._latest_resolution["outcome"])
                 if msg.get("outcome") in ("PIVOT", "RESET"):
                     try:
-                        from clawbot.board import generate_hypothesis_from_pivot
+                        from clawbot.board import generate_hypothesis_for_portfolio
                         if hasattr(self, "_db_pool") and self._db_pool is not None:
-                            hyp_store = HypothesisStore(self._db_pool)
+                            hyp_store = HypothesisStore(
+                                self._db_pool,
+                                max_active=settings.max_active_hypotheses,
+                            )
                             current = await hyp_store.get_active()
                             prev_name = current["name"] if current else "H1"
                             prev_desc = current["description"] if current else "Initial hypothesis"
-                            await generate_hypothesis_from_pivot(
+                            await generate_hypothesis_for_portfolio(
                                 pool=self._pool, store=hyp_store,
                                 previous_name=prev_name, previous_description=prev_desc,
                                 pivot_rationale=msg.get("action_required", "")[:400],
+                                max_active=settings.max_active_hypotheses,
                             )
                     except Exception as exc:
                         logger.error("Hypothesis generation on pivot failed: %s", exc)

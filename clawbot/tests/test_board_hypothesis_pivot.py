@@ -18,7 +18,9 @@ async def test_pivot_outcome_generates_new_hypothesis():
     }))
 
     store_mock = MagicMock()
-    store_mock.set_active = AsyncMock(return_value="hyp_abc")
+    # Portfolio is empty — no eviction needed; new hypothesis is simply added.
+    store_mock.get_active_portfolio = AsyncMock(return_value=[])
+    store_mock.add_hypothesis = AsyncMock(return_value="hyp_abc")
 
     new_id = await generate_hypothesis_from_pivot(
         pool=pool,
@@ -28,8 +30,8 @@ async def test_pivot_outcome_generates_new_hypothesis():
         pivot_rationale="0 sales after 14 days; market saturated with free LLM-generated PDFs",
     )
     assert new_id == "hyp_abc"
-    store_mock.set_active.assert_called_once()
-    kwargs = store_mock.set_active.call_args.kwargs
+    store_mock.add_hypothesis.assert_called_once()
+    kwargs = store_mock.add_hypothesis.call_args.kwargs
     assert kwargs["name"] == "H2"
     assert "B2B" in kwargs["description"]
     assert kwargs["kill_criteria"]["max_days_without_revenue"] == 21
@@ -56,11 +58,13 @@ async def test_ceo_cycle_prompt_includes_active_hypothesis(tmp_path):
     )
 
     hyp_store_mock = MagicMock()
-    hyp_store_mock.get_active = AsyncMock(return_value={
+    hyp_store_mock.get_active_portfolio = AsyncMock(return_value=[{
         "name": "H2", "description": "B2B research briefs",
         "kill_criteria": {"max_days_without_revenue": 21},
         "status": "active",
-    })
+        "weight": 0.33,
+        "progress_score": 0.0,
+    }])
     plan_store_mock = MagicMock()
     plan_store_mock.get_current_milestone = AsyncMock(return_value=None)
     with patch("clawbot.scheduler.HypothesisStore", return_value=hyp_store_mock), \
