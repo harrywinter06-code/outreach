@@ -22,6 +22,11 @@ EXPECTED_BUILTINS = {
     "worker_spawn", "worker_fire", "skill_request",
     "account_create", "account_get", "account_list", "account_mark_zombie",
     "stripe_issue_card", "stripe_freeze_card", "stripe_list_authorizations",
+    # Phase H — Task 31 writing pack
+    "write_long_form_article", "write_tweet_thread", "write_linkedin_post",
+    "write_cold_email", "write_landing_page_copy", "write_case_study",
+    "summarize", "translate", "grammar_check", "readability_score",
+    "tone_rewrite",
 }
 
 
