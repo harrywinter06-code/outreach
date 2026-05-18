@@ -37,6 +37,12 @@ EXPECTED_BUILTINS = {
     "substack_publish", "medium_publish", "dev_to_publish", "hashnode_publish",
     "bluesky_post", "mastodon_post", "rss_publish", "buffer_schedule",
     "newsletter_send", "youtube_upload",
+    # Phase H — Task 29 outreach + CRM pack
+    "hunter_find_email", "apollo_search_contacts",
+    "email_warmup_send", "email_warmup_inbox_clean",
+    "email_send_cold", "email_send_followup_sequence",
+    "email_classify_reply", "email_suppress",
+    "crm_upsert_lead", "crm_advance_stage", "lead_score",
 }
 
 

@@ -145,3 +145,32 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_hypothesis_status ON active_hypothesis(status)"
             )
+        # Phase H Task 29 — outreach + CRM
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS leads (
+                    email       TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL DEFAULT '',
+                    company     TEXT NOT NULL DEFAULT '',
+                    title       TEXT NOT NULL DEFAULT '',
+                    source      TEXT NOT NULL DEFAULT '',
+                    stage       TEXT NOT NULL DEFAULT 'new',
+                    score       DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    metadata    JSONB NOT NULL DEFAULT '{}',
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS suppression (
+                    email          TEXT PRIMARY KEY,
+                    reason         TEXT NOT NULL DEFAULT '',
+                    suppressed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)

@@ -284,6 +284,8 @@ class DirectiveRouter:
                 "BSKY_HANDLE", "BSKY_APP_PASSWORD",
                 "MASTODON_INSTANCE", "MASTODON_ACCESS_TOKEN",
                 "BUFFER_ACCESS_TOKEN",
+                # Outreach-pack credentials (Phase H Task 29)
+                "HUNTER_API_KEY", "APOLLO_API_KEY",
             ],
             workspace_root=str(self._metrics_dir / "workspace"),
             fs_allowed_roots=[
