@@ -164,6 +164,31 @@ async def test_payment_intent_succeeded_also_routes(mock_store):
     assert call["amount_gbp"] == 3.0
 
 
+def test_webhook_endpoint_binds_request_correctly():
+    """Regression: `from __future__ import annotations` makes annotations
+    strings. If Request is imported inside the router builder, FastAPI
+    can't resolve the annotation and treats `request` as a query param,
+    returning 422 on any POST.
+
+    Verify the endpoint accepts a POST without complaining about missing
+    query params (we expect a 400 for the unsigned/invalid body, NOT 422).
+    """
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    from clawbot.stripe_webhook import get_router
+    app = FastAPI()
+    app.include_router(get_router())
+    client = TestClient(app)
+    # Send an unsigned, empty-body POST. With STRIPE_WEBHOOK_SECRET unset
+    # in test env, this should hit the dev-mode JSON parse path and either
+    # succeed-with-routed-False (if "{}") or 400 for invalid payload —
+    # but NOT 422 (missing param) which would indicate the annotation bug.
+    response = client.post("/webhook/stripe", content=b"{}")
+    assert response.status_code != 422, (
+        f"422 means FastAPI didn't bind Request — annotation regression. Body: {response.text}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_route_returns_store_unavailable_when_business_store_not_wired():
     """If main.py never sets BUSINESS_STORE (misconfig), the webhook must

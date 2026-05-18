@@ -20,6 +20,13 @@ import json
 import logging
 from typing import Any
 
+# Module-level import so FastAPI can resolve the `Request` annotation on
+# the endpoint signature. With `from __future__ import annotations` all
+# annotations are strings — if Request is only imported inside _build_router,
+# FastAPI's signature introspection can't find it and falls back to
+# treating `request` as a query param (422 errors).
+from fastapi import APIRouter, HTTPException, Request
+
 logger = logging.getLogger(__name__)
 
 # Set by main.py once BusinessStore is instantiated. The webhook reads it
@@ -34,8 +41,8 @@ _REFUND_EVENTS = {"charge.refunded", "charge.refund.updated"}
 
 
 def _build_router():
-    """Lazy-import FastAPI + stripe so this module can load without the deps."""
-    from fastapi import APIRouter, Request, HTTPException
+    """Build the FastAPI router. FastAPI is imported at module level (above)
+    so annotation resolution works under `from __future__ import annotations`."""
     from clawbot.config import settings
 
     router = APIRouter()
