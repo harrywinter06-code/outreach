@@ -37,6 +37,13 @@ EXPECTED_BUILTINS = {
     "freeagent_create_invoice", "freeagent_record_expense",
     "xero_reconcile_transaction",
     "compute_runway_months", "ir35_determine_status",
+    # Phase H — Task 35 dev/infra pack
+    "github_create_repo", "github_create_release", "github_star_repo",
+    "github_search_issues",
+    "npm_publish", "pypi_publish", "docker_build_and_push",
+    "dns_set_record", "dns_verify_propagation", "ssl_check_expiry",
+    "domain_check_availability", "domain_register",
+    "cloudflare_purge_cache", "cloudflare_deploy_pages_site",
 }
 
 
