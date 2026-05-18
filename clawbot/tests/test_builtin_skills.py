@@ -26,6 +26,9 @@ EXPECTED_BUILTINS = {
     "experiment_create", "experiment_record_observation",
     "experiment_compute_significance", "bandit_allocate_budget",
     "experiment_kill_underperformer", "experiment_summarize",
+    "browser_signup", "browser_form_fill", "browser_extract_structured",
+    "browser_solve_captcha", "browser_save_session", "browser_load_session",
+    "browser_navigate_and_record", "browser_screenshot_element",
 }
 
 
