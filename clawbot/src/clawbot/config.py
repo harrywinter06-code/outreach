@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     #   EMAIL_DOMAIN=veriflowlabs.co.uk    (verified in Resend dashboard)
     resend_api_key: str = ""
 
+    # Z4 polish — outbound proxy for browser-use signup attempts. Routes
+    # the headless browser through a residential-looking IP (Oracle Cloud
+    # London VM at 130.162.188.21:1080) so signup forms don't insta-block
+    # the Hetzner datacenter IP. Empty = no proxy (default Hetzner egress).
+    # Format: socks5h://user:pass@host:port (per infra_proxy.md memory).
+    browser_proxy_url: str = ""
+
     # Account-management infrastructure — all optional.
     # Without these, _LiveAccounts falls back to _NoopAccounts so existing
     # behaviour is unchanged. Operator setup:

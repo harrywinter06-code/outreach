@@ -30,6 +30,12 @@ async def run_browser_task(
     Execute a single browser task via browser-use.
     The LLM is provided by our pool so rate limiting applies uniformly.
 
+    Optional: routes traffic through SOCKS5 proxy set via BROWSER_PROXY_URL
+    env var. Used to bypass datacenter-IP detection on signup forms
+    (Hetzner IPs are flagged by Bluesky / Cloudflare Turnstile / etc).
+    The Oracle Cloud UK proxy at infra-proxy.md provides a UK residential-
+    looking IP for £0.
+
     browser-use 0.x switched from accepting langchain's ChatOpenAI to
     requiring its own BaseChatModel Protocol (needs `.provider`, `.name`,
     `.model_name`, `.ainvoke`). We adapt our pooled provider to that
@@ -37,10 +43,23 @@ async def run_browser_task(
     """
     try:
         from browser_use import Agent as BrowserAgent
+        from browser_use import BrowserProfile
 
         provider = await pool.acquire()
         llm = _PoolBackedChatModel(provider=provider)
-        agent = BrowserAgent(task=task, llm=llm)
+
+        import os
+        proxy_url = os.environ.get("BROWSER_PROXY_URL", "").strip()
+        browser_profile = None
+        if proxy_url:
+            # BrowserProfile.proxy accepts Playwright's proxy dict format.
+            # SOCKS5 with auth: server=socks5://host:port + username/password.
+            # We use socks5h:// in env (DNS-via-proxy); strip the 'h' for
+            # Playwright which only knows socks5://.
+            proxy_dict = _parse_proxy_url(proxy_url)
+            browser_profile = BrowserProfile(proxy=proxy_dict)
+
+        agent = BrowserAgent(task=task, llm=llm, browser_profile=browser_profile)
         result = await agent.run(max_steps=max_steps)
 
         return BrowserResult(
@@ -55,6 +74,30 @@ async def run_browser_task(
             output="",
             error=str(exc),
         )
+
+
+def _parse_proxy_url(url: str) -> dict:
+    """Parse SOCKS5/HTTP proxy URL into Playwright's dict format.
+
+    Input examples:
+      socks5h://user:pass@host:1080
+      socks5://user:pass@host:1080
+      http://user:pass@host:8080
+
+    Returns {"server": "socks5://host:1080", "username": "user", "password": "pass"}
+    Playwright doesn't understand socks5h (host-resolves-via-proxy); we
+    downgrade to socks5. Pragmatic — DNS leak risk is acceptable for a
+    UK proxy serving signup forms.
+    """
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    scheme = (p.scheme or "socks5").replace("socks5h", "socks5")
+    out: dict = {"server": f"{scheme}://{p.hostname}:{p.port}"}
+    if p.username:
+        out["username"] = p.username
+    if p.password:
+        out["password"] = p.password
+    return out
 
 
 class _PoolBackedChatModel:
