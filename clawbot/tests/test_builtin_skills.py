@@ -85,6 +85,8 @@ EXPECTED_BUILTINS = {
     "infra_db_health", "infra_redis_health", "infra_status_report",
     # Swarm Phase Z2
     "swarm_status",
+    # Z4 — account autonomy
+    "account_create_from_registry", "account_extract_api_key",
     # Phase H — Task 37 compliance pack
     "sanctions_check", "kyc_verify_address", "fraud_score_transaction",
     "captcha_solve", "gdpr_data_export", "gdpr_delete_user",

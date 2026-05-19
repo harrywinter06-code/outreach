@@ -69,6 +69,10 @@ class VectorClient(Protocol):
 
 class SecretClient(Protocol):
     def get(self, name: str) -> str: ...
+    # Z4: agent-set secrets. Used when account_extract_api_key extracts
+    # a credential post-signup. Vault-backed and Fernet-encrypted; reads
+    # via get() check the vault first, falling back to env vars.
+    def set(self, name: str, value: str) -> None: ...
 
 
 class FsClient(Protocol):
@@ -137,6 +141,16 @@ class AccountsClient(Protocol):
     async def get_account(self, *, service: str, email: str) -> dict[str, Any] | None: ...
     async def list_accounts(self, *, status: str | None = None) -> list[dict[str, Any]]: ...
     async def mark_zombie(self, *, service: str, email: str, reason: str) -> dict[str, Any]: ...
+
+
+class ServicesClient(Protocol):
+    """Z4 — registry of services the agent can auto-sign-up for. Exposed
+    through ctx so agent skills can consult the registry without importing
+    from clawbot (which the AST scanner blocks). Operator-trusted curated
+    data; new services land via PR + ctx exposure, not via skill_request."""
+    def get(self, key: str) -> dict[str, Any] | None: ...
+    def list(self, *, skip_blocked: bool = True) -> list[dict[str, Any]]: ...
+    def channels_to_keys(self, channels: list[str]) -> list[str]: ...
 
 
 class RevenueClient(Protocol):
@@ -213,6 +227,7 @@ class SkillCtx:
     revenue: RevenueClient
     media: MediaClient
     dev: DevClient
+    services: ServicesClient
     caller_id: str
     budget_usd: float
     # Swarm Phase Z2.5 — attribution. When a skill call originates from a
@@ -254,6 +269,9 @@ class _NoopVector:
 class _NoopSecret:
     def get(self, name: str) -> str:
         return ""
+
+    def set(self, name: str, value: str) -> None:
+        return None
 
 
 class _NoopFs:
@@ -467,6 +485,53 @@ class _NoopDev:
                 "cmd_name": cmd_name, "args": args, "cwd": cwd}
 
 
+class _NoopServices:
+    def get(self, key: str) -> dict[str, Any] | None:
+        return None
+
+    def list(self, *, skip_blocked: bool = True) -> list[dict[str, Any]]:
+        return []
+
+    def channels_to_keys(self, channels: list[str]) -> list[str]:
+        return []
+
+
+class _LiveServices:
+    """Wraps the curated services_registry, exposing read-only access to
+    agent skills via ctx.services. Operator-trusted curated data — agents
+    cannot mutate the registry, only query it."""
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        from clawbot.services_registry import get_service
+        spec = get_service(key)
+        return _spec_to_dict(spec) if spec is not None else None
+
+    def list(self, *, skip_blocked: bool = True) -> list[dict[str, Any]]:
+        from clawbot.services_registry import list_services
+        return [_spec_to_dict(s) for s in list_services(skip_blocked=skip_blocked)]
+
+    def channels_to_keys(self, channels: list[str]) -> list[str]:
+        from clawbot.services_registry import channels_to_service_keys
+        return channels_to_service_keys(channels)
+
+
+def _spec_to_dict(spec: Any) -> dict[str, Any]:
+    """ServiceSpec → plain dict (skills receive plain dicts, not dataclasses)."""
+    return {
+        "key": spec.key,
+        "display_name": spec.display_name,
+        "signup_url": spec.signup_url,
+        "verification_type": spec.verification_type,
+        "requires_captcha": spec.requires_captcha,
+        "requires_phone": spec.requires_phone,
+        "signup_task_extra": spec.signup_task_extra,
+        "api_key_extraction_task": spec.api_key_extraction_task,
+        "secret_names": list(spec.secret_names),
+        "health_check_url": spec.health_check_url,
+        "notes": spec.notes,
+    }
+
+
 def make_noop_ctx(
     *, caller_id: str, budget_usd: float, business_id: str | None = None,
 ) -> SkillCtx:
@@ -479,6 +544,7 @@ def make_noop_ctx(
         revenue=_NoopRevenue(),
         media=_NoopMedia(),
         dev=_NoopDev(),
+        services=_NoopServices(),
         caller_id=caller_id, budget_usd=budget_usd, business_id=business_id,
     )
 
@@ -571,13 +637,44 @@ class _LiveVector:
 
 
 class _LiveSecret:
-    def __init__(self, allowlist: list[str]) -> None:
+    """Allowlist-gated secret reader/writer.
+
+    Lookup hierarchy on get(): vault → env. Agent-set secrets (written
+    via set()) shadow env vars of the same name, which is what allows
+    Z4 account-creation to make a credential available to downstream
+    skills without requiring a container restart to pick up new env.
+
+    The vault is the AccountsStore (Fernet-encrypted SQLite). Without it
+    wired, get() falls back to env-only and set() is a no-op (logged).
+    """
+
+    def __init__(self, allowlist: list[str], vault: Any | None = None) -> None:
         self._allowlist = frozenset(allowlist)
+        self._vault = vault  # AccountsStore or None
 
     def get(self, name: str) -> str:
         if name not in self._allowlist:
             raise PermissionError(f"secret {name} not allowlisted for skills")
+        if self._vault is not None:
+            try:
+                vault_val = self._vault.get_secret(name)
+                if vault_val:
+                    return vault_val
+            except Exception as exc:
+                _stdlib_logging.getLogger(__name__).warning(
+                    "vault secret read failed for %s: %s", name, exc,
+                )
         return os.environ.get(name, "")
+
+    def set(self, name: str, value: str) -> None:
+        if name not in self._allowlist:
+            raise PermissionError(f"secret {name} not allowlisted for skills")
+        if self._vault is None:
+            _stdlib_logging.getLogger(__name__).warning(
+                "vault not wired — agent secret %s not persisted", name,
+            )
+            return
+        self._vault.set_secret(name=name, value=value, source="agent")
 
 
 class _LiveFs:
@@ -1940,12 +2037,19 @@ def make_live_ctx(
     browser_client = _LiveBrowser(pool=llm_pool)
 
     accounts: AccountsClient
-    if accounts_vault_key and imap_host and email_domain:
+    # Z4: vault is also shared with _LiveSecret for agent-set secrets
+    # (api keys the agent extracts post-signup). When account creation
+    # infrastructure isn't wired (no vault key / IMAP / domain), the
+    # vault is None and _LiveSecret falls back to env-only.
+    vault = None
+    if accounts_vault_key:
         from clawbot.accounts_store import AccountsStore
-        from clawbot.profile_store import ProfileStore
-        from clawbot.email_reader import EmailReader
         vault = AccountsStore(db_path=accounts_db_path, encryption_key=accounts_vault_key)
         vault.init_schema()
+        vault.init_secrets_schema()  # Z4 — agent_secrets table
+    if vault is not None and imap_host and email_domain:
+        from clawbot.profile_store import ProfileStore
+        from clawbot.email_reader import EmailReader
         profiles = ProfileStore(root="data/profiles")
         email_reader = EmailReader(
             host=imap_host, port=imap_port,
@@ -1995,7 +2099,7 @@ def make_live_ctx(
         sql=_LiveSql(db_pool),
         llm=_LiveLlm(llm_pool, caller_id),
         vector=_LiveVector(brain, caller_id),
-        secret=_LiveSecret(secret_allowlist),
+        secret=_LiveSecret(secret_allowlist, vault=vault),
         fs=_LiveFs(workspace_root, extra_roots),
         time=_LiveTime(),
         operator=_LiveOperator(escalation, bus, caller_id),
@@ -2010,6 +2114,7 @@ def make_live_ctx(
         revenue=revenue,
         media=media,
         dev=dev,
+        services=_LiveServices(),
         caller_id=caller_id,
         budget_usd=budget_usd,
         business_id=business_id,

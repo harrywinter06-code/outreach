@@ -139,3 +139,55 @@ class AccountsStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no account for ({service!r}, {email!r})")
+
+    # ─── Agent-set secret store (Z4) ────────────────────────────────────────
+    # Separate namespace from account credentials. Used when the agent
+    # extracts an API key from a service it just signed up for (e.g. a
+    # Bluesky app password) and needs to make it readable by subsequent
+    # skill calls via ctx.secret.get(NAME).
+
+    def init_secrets_schema(self) -> None:
+        """Idempotent — create the agent_secrets table if missing."""
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_secrets (
+                    name TEXT PRIMARY KEY,
+                    value_enc BLOB NOT NULL,
+                    source TEXT NOT NULL,
+                    set_at TEXT NOT NULL
+                )
+            """)
+
+    def set_secret(self, *, name: str, value: str, source: str = "agent") -> None:
+        """Upsert an encrypted secret. `source` records who/what wrote it
+        (agent / operator-import / extracted-from-<service>) for audit."""
+        if not name or "=" in name or "\n" in name:
+            raise ValueError(f"secret name {name!r} invalid (no '=' or newlines)")
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_secrets (name, value_enc, source, set_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET "
+                "  value_enc=excluded.value_enc, source=excluded.source, set_at=excluded.set_at",
+                (name, self._enc(value), source, now),
+            )
+
+    def get_secret(self, name: str) -> str | None:
+        """Decrypt + return the secret, or None if unset."""
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT value_enc FROM agent_secrets WHERE name=?", (name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._dec(row[0])
+
+    def list_secret_names(self) -> list[str]:
+        """Audit helper — names only, never values."""
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM agent_secrets ORDER BY name",
+            ).fetchall()
+        return [r[0] for r in rows]
