@@ -1,0 +1,17 @@
+#!/bin/bash
+# Operator-side credential management wrapper. Forwards to the in-container
+# CLI so .env is loaded automatically and secrets land in the encrypted vault.
+#
+# Usage (from operator's machine):
+#   ssh clawbot /opt/clawbot/ops add-account bluesky <handle> <app-password>
+#   ssh clawbot /opt/clawbot/ops add-account devto <api-key>
+#   ssh clawbot /opt/clawbot/ops list-accounts
+#   ssh clawbot /opt/clawbot/ops test-credential bluesky
+#
+# Interactive prompting (no password in shell history):
+#   ssh -t clawbot /opt/clawbot/ops add-account bluesky my.handle.bsky.social -
+set -euo pipefail
+cd /opt/clawbot
+# -T disables TTY allocation for non-interactive use; for interactive prompts
+# (passing '-' as a value) the operator should ssh -t.
+docker compose exec -T clawbot /venv/bin/python -m clawbot.ops_cli "$@"
