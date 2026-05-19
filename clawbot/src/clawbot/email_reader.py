@@ -52,31 +52,48 @@ class EmailReader:
         try:
             imap = imaplib.IMAP4_SSL(self._host, self._port)
             imap.login(self._user, self._password)
-            imap.select("INBOX")
-            status, data = imap.search(None, f'(SINCE "{since_str}")')
-            if status != "OK" or not data or not data[0]:
-                return None
-            # Cap at the 50 most recent matches — IMAP SINCE is date-granular,
-            # so a busy inbox can yield hundreds of hits for a 10-minute query.
-            msg_ids = data[0].split()[-50:]
-            for msg_id in reversed(msg_ids):  # newest first
-                status, msg_data = imap.fetch(msg_id, "(RFC822)")
-                if status != "OK" or not msg_data:
+            # Z4: search INBOX AND [Gmail]/Spam — signup verifications for
+            # alias addresses on a newish domain routinely get auto-spammed.
+            # Operator-side filter is fragile (forgettable); always-check-spam
+            # is robust. Non-Gmail providers' spam folders are tried too.
+            for folder in ('INBOX', '"[Gmail]/Spam"', 'Spam', 'Junk'):
+                try:
+                    status, _ = imap.select(folder)
+                except Exception:
                     continue
-                raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else msg_data[0]
-                if not isinstance(raw, bytes):
+                if status != "OK":
                     continue
-                msg = email.message_from_bytes(raw)
-                to_header = (msg.get("To") or "").lower()
-                if target_address not in to_header:
+                status, data = imap.search(None, f'(SINCE "{since_str}")')
+                if status != "OK" or not data or not data[0]:
                     continue
-                body = self._extract_body(msg)
-                url_match = _URL_RE.search(body)
-                if url_match:
-                    return VerificationResult(url=url_match.group(0), code=None)
-                code_match = _CODE_RE.search(body)
-                if code_match:
-                    return VerificationResult(url=None, code=code_match.group(1))
+                # Cap at the 50 most recent matches per folder
+                msg_ids = data[0].split()[-50:]
+                for msg_id in reversed(msg_ids):  # newest first
+                    status, msg_data = imap.fetch(msg_id, "(RFC822)")
+                    if status != "OK" or not msg_data:
+                        continue
+                    raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else msg_data[0]
+                    if not isinstance(raw, bytes):
+                        continue
+                    msg = email.message_from_bytes(raw)
+                    # Some forwarders rewrite To; also check Delivered-To
+                    # and X-Original-To headers
+                    candidate_headers = (
+                        (msg.get("To") or "")
+                        + " " + (msg.get("Delivered-To") or "")
+                        + " " + (msg.get("X-Original-To") or "")
+                    ).lower()
+                    if target_address not in candidate_headers:
+                        continue
+                    body = self._extract_body(msg)
+                    url_match = _URL_RE.search(body)
+                    if url_match:
+                        logger.info("verification URL found in %s for %s", folder, target_address)
+                        return VerificationResult(url=url_match.group(0), code=None)
+                    code_match = _CODE_RE.search(body)
+                    if code_match:
+                        logger.info("verification code found in %s for %s", folder, target_address)
+                        return VerificationResult(url=None, code=code_match.group(1))
             return None
         except Exception as exc:
             logger.warning("IMAP fetch failed: %s", exc)
@@ -85,6 +102,9 @@ class EmailReader:
             if imap is not None:
                 try:
                     imap.close()
+                except Exception:
+                    pass
+                try:
                     imap.logout()
                 except Exception:
                     pass
