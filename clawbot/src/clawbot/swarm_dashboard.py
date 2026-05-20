@@ -50,10 +50,10 @@ def get_router() -> APIRouter:
 async def _gather_state() -> dict:
     out: dict = {}
     async with DB_POOL.acquire() as conn:
-        # Active businesses
+        # Active businesses (genome included so we can show strategy column)
         out["businesses"] = [dict(r) for r in await conn.fetch(
             "SELECT business_id, name, niche, status, fitness_score, "
-            "revenue_total_gbp, metadata, "
+            "revenue_total_gbp, metadata, genome, "
             "EXTRACT(EPOCH FROM (NOW() - spawned_at))/3600 AS age_h, "
             "EXTRACT(EPOCH FROM (NOW() - COALESCE(last_cycle_at, spawned_at)))/60 AS mins_since_cycle "
             "FROM businesses WHERE status='active' "
@@ -207,7 +207,7 @@ small {{ color: #888; }}
 
 <h2>businesses</h2>
 <table>
-<tr><th>name</th><th>niche</th><th>fit</th><th>£</th><th>stall</th><th>age (h) / last cycle (m)</th></tr>
+<tr><th>name</th><th>strategy</th><th>niche</th><th>fit</th><th>£</th><th>stall</th><th>age (h) / last cycle (m)</th></tr>
 {biz_rows}
 </table>
 
@@ -252,8 +252,20 @@ def _render_biz(b: dict) -> str:
     stall = (md or {}).get("artifact_stall_count", 0)
     age_h = float(b.get("age_h") or 0)
     mins_ago = float(b.get("mins_since_cycle") or 0)
+    # Pull strategy from the genome (may be a JSON string or dict)
+    genome = None
+    raw_g = b.get("genome")
+    if isinstance(raw_g, str):
+        try:
+            genome = json.loads(raw_g)
+        except Exception:
+            genome = None
+    elif isinstance(raw_g, dict):
+        genome = raw_g
+    strategy = (genome or {}).get("strategy", "—")
     return (
         f"<tr><td>{_esc(b['name'])}</td>"
+        f"<td><small>{_esc(strategy)}</small></td>"
         f"<td><small>{_esc(str(b['niche'])[:60])}</small></td>"
         f"<td>{float(b['fitness_score']):.2f}</td>"
         f"<td>£{float(b['revenue_total_gbp']):.2f}</td>"
