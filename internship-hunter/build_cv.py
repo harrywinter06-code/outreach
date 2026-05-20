@@ -145,9 +145,6 @@ def build():
     _entry(doc, "Transition Mentor", "UCL School of Management", "September 2025 – Present")
     _bullet(doc, "Selected to mentor 15 first-year students; deliver workshops, one-on-one guidance, and faculty feedback on programme outcomes")
 
-    _entry(doc, "Member", "UCL Investment Society", "November 2024 – Present")
-    _bullet(doc, "Equity research workshops; team stock pitch competition presenting full valuation to judges")
-
     # ── Skills & Additional ────────────────────────────────────────────────────
     _section(doc, "Skills & Additional")
 
