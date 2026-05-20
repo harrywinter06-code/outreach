@@ -401,9 +401,21 @@ class DirectiveRouter:
 
         # Only record live calls for actual execution attempts (not param-validation rejections).
         _is_param_error = record.error is not None and record.error.startswith("missing required param")
+        # Z5b: skills that return ok=false because of MISSING CREDENTIALS / soft
+        # degradation must NOT count as canary failures. They're not bugs —
+        # they're skills correctly reporting "I can't do this without setup."
+        # Demoting them removes the skill permanently and breaks future cycles
+        # even after credentials land. Only exceptions and structural errors
+        # (TypeError, missing return field, timeout, raised exception) qualify
+        # for canary demotion.
+        _is_soft_degradation = record.error is not None and (
+            "silent degradation" in record.error
+            or "ok=False" in record.error
+        )
         if not _is_param_error:
             REGISTRY._record_live_call(skill_name, record.ok)
-        if not record.ok and not _is_param_error and REGISTRY.is_canary(skill_name):
+        if (not record.ok and not _is_param_error and not _is_soft_degradation
+                and REGISTRY.is_canary(skill_name)):
             logger.warning("Canary failure for %s — demoting", skill_name)
             REGISTRY.demote_on_canary_failure(skill_name, reason=record.error or "unknown")
             await self._bus.publish_inbox(from_agent, {

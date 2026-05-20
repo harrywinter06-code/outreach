@@ -136,6 +136,38 @@ async def test_router_threads_business_id_into_skill_ctx(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_canary_does_not_demote_on_soft_degradation(tmp_path):
+    """Z5b: skills returning ok=false because of missing credentials
+    MUST NOT be canary-demoted. Otherwise medium_publish / dev_to_publish /
+    bluesky_post all get killed off the moment they hit an uncredentialed
+    cycle — substrate loses access permanently."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(exist_ok=True)
+    (skills_dir / "soft_fail_skill.py").write_text("""
+META = {"name": "soft_fail_skill", "description": "returns ok=false when no creds",
+        "params": {}, "returns": {"ok": "bool", "url": "str"}}
+async def run(ctx):
+    return {"ok": False, "url": ""}
+""")
+    from clawbot.skill_registry import SkillRegistry
+    from clawbot import skill_registry as mod
+    reg = SkillRegistry(skills_dir=skills_dir)
+    reg.discover()
+    mod.REGISTRY = reg
+    router, _ = _make_router_with_skill(tmp_path)
+    handler = router._get_handler("soft_fail_skill")
+    assert handler is not None
+    # Call it many times — would canary-demote without the soft-degradation guard
+    for _ in range(10):
+        await handler({"action": "soft_fail_skill"}, "chain-x", "biz_test")
+    # Skill must STILL be in the registry after 10 soft failures
+    assert reg.get_meta("soft_fail_skill") is not None, (
+        "canary demoted a soft-degradation skill — would kill medium_publish, "
+        "bluesky_post, etc. after first uncredentialed cycle"
+    )
+
+
+@pytest.mark.asyncio
 async def test_hardcoded_handler_wins_over_skill(tmp_path):
     """A hardcoded action name must NOT be shadowed by a same-named skill."""
     skills_dir = tmp_path / "skills"
