@@ -440,6 +440,9 @@ def create_app(db_pool: Any, redis_url: str) -> Any:
     # Z3 — per-business lander page + email/quiz capture
     from clawbot.business_lander import get_router as get_lander_router
     app.include_router(get_lander_router())
+    # Z-OBS — swarm-state operator dashboard at /swarm
+    from clawbot.swarm_dashboard import get_router as get_swarm_router
+    app.include_router(get_swarm_router())
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:

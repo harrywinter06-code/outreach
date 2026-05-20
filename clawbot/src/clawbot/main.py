@@ -185,6 +185,17 @@ async def main() -> None:
     stripe_webhook.BRAIN = brain
     # Z3: lander route reads businesses + writes business_leads.
     business_lander.DB_POOL = db.pool
+    # Z-OBS: /swarm dashboard page reads from db + vault.
+    from clawbot import swarm_dashboard
+    swarm_dashboard.DB_POOL = db.pool
+    if settings.accounts_vault_key:
+        from clawbot.accounts_store import AccountsStore
+        _dash_vault = AccountsStore(
+            db_path=settings.accounts_db_path,
+            encryption_key=settings.accounts_vault_key,
+        )
+        _dash_vault.init_secrets_schema()
+        swarm_dashboard.ACCOUNTS_STORE = _dash_vault
 
     from clawbot.skill_registry import init_skill_system
     from clawbot.skill_forge import SkillForge
