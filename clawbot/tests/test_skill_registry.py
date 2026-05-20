@@ -72,6 +72,53 @@ def test_registry_records_unknown_skill_failure_to_stats_db(skills_dir: Path):
     assert args[7] == "biz_x", "business_id must be the last positional arg"
 
 
+def test_registry_strips_extra_kwargs_llm_doesnt_crash_skills(tmp_path: Path):
+    """Z5b: LLMs routinely add extra fields to action JSON (filter, hints,
+    context) that skills don't accept. Pre-Z5b: TypeError crashed the
+    skill, canary demoted it. Post-Z5b: registry strips unknowns before
+    calling run(), skill runs cleanly with only its declared params."""
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "no_extras.py").write_text("""
+META = {"name": "no_extras", "description": "rejects extras strictly",
+        "params": {"q": "str"}, "returns": {"ok": "bool"}}
+async def run(ctx, q: str) -> dict:
+    return {"ok": True, "received_q": q}
+""")
+    reg = SkillRegistry(skills_dir=d)
+    reg.discover()
+    ctx = make_noop_ctx(caller_id="t", budget_usd=0.0)
+    # LLM-style: includes the right param + several extras
+    record = asyncio.run(reg.call("no_extras", {
+        "q": "real query",
+        "filter": {"category": "x"},  # extra
+        "hints": "ignored",            # extra
+        "max_n": 5,                    # extra
+    }, ctx))
+    assert record.ok, f"strip-extras failed: {record.error}"
+    assert record.result["received_q"] == "real query"
+
+
+def test_registry_preserves_all_kwargs_when_skill_has_var_kw(tmp_path: Path):
+    """Skills with **kwargs in run() are exempt — they want everything."""
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "kw_skill.py").write_text("""
+META = {"name": "kw_skill", "description": "wants all kwargs",
+        "params": {"q": "str"}, "returns": {"ok": "bool"}}
+async def run(ctx, q: str, **kwargs) -> dict:
+    return {"ok": True, "kw_count": len(kwargs)}
+""")
+    reg = SkillRegistry(skills_dir=d)
+    reg.discover()
+    ctx = make_noop_ctx(caller_id="t", budget_usd=0.0)
+    record = asyncio.run(reg.call("kw_skill", {
+        "q": "x", "extra1": 1, "extra2": 2, "extra3": 3,
+    }, ctx))
+    assert record.ok
+    assert record.result["kw_count"] == 3, "kwargs not preserved for **kwargs skill"
+
+
 def test_registry_treats_inner_ok_false_as_failure(tmp_path: Path):
     """Z3.5: skills that silently degrade by returning {"ok": False, ...}
     were being recorded as ok=true (call didn't raise, dict had all META

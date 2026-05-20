@@ -195,6 +195,19 @@ class SkillRegistry:
             await self._record_db_stat(record, business_id=ctx.business_id)
             return record
 
+        # Z5b: strip extra kwargs not in the skill's run() signature.
+        # LLMs routinely add extra fields (filter, hints, context) to action
+        # JSON that the skill doesn't accept — causing TypeError and canary
+        # demotion of perfectly good skills. Skills with **kwargs in run()
+        # are exempt; we pass them everything.
+        sig_params = sig.parameters
+        has_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values()
+        )
+        if not has_var_kw:
+            known = {pname for pname in sig_params if pname != "ctx"}
+            params = {k: v for k, v in params.items() if k in known}
+
         start = time.monotonic()
         record: SkillCallRecord
         try:
