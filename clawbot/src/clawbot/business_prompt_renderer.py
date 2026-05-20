@@ -206,42 +206,68 @@ def render_business_prompt(
         + ("\n".join(sig_lines) if sig_lines else "(none available)")
     )
 
-    # 5. MANDATE — Z3: traffic-to-lander, not publish-for-its-own-sake.
+    # 5. MANDATE — Z5: strategy-aware. The mandate depends on which
+    # business model this genome encodes. Different strategies have wildly
+    # different success criteria (revenue vs. leads vs. article count vs.
+    # affiliate clicks).
     lander_url = md.get("lander_url", "")
     payment_link = md.get("payment_link_url", "")
     artifact_list = ", ".join(ARTIFACT_ACTIONS[:8]) + ", ..."
+
+    strategy_key = g.get("strategy", "paid_personalised_report")
+    strategy_mandate = _strategy_mandate(strategy_key)
+
+    funnel_lines = []
+    if lander_url:
+        funnel_lines.append(f"  lander:        {lander_url}")
+    if payment_link:
+        funnel_lines.append(f"  payment link:  {payment_link}")
+    funnel_section = ""
+    if funnel_lines:
+        funnel_section = "\nYour public-facing URLs:\n" + "\n".join(funnel_lines) + "\n"
+
     response_example = json.dumps({
-        "action": "dev_to_publish",
-        "title": "Quick IR35 self-check — outside or inside?",
-        "body_markdown": (
-            f"... article body ... \\n\\nFull personalised check at {lander_url or '<your lander>'} "
-            f"— £{g.get('price_gbp', '?')} for the AI-generated report."
-        ),
+        "action": "bluesky_post",
+        "text": f"Quick IR35 self-check (UK contractors): {lander_url or '<your lander>'}",
         "business_id": business.business_id,
     })
-    funnel_section = ""
-    if lander_url:
-        funnel_section = (
-            "\nYour conversion funnel (already set up — link to it):\n"
-            f"  lander:        {lander_url}\n"
-            f"  payment link:  {payment_link or '(not yet created)'}\n"
-            "Every artifact you publish MUST include the lander URL with copy\n"
-            "explaining what the customer gets (free taster + paid report).\n"
-            "Articles that don't drive traffic to the lander are wasted cycles.\n"
-        )
+
     sections.append(
-        "=== MANDATE ===\n"
-        "Produce ONE concrete artifact this cycle that drives traffic to your\n"
-        f"funnel. Artifact-producing actions: {artifact_list}\n"
-        + funnel_section + "\n"
+        f"=== MANDATE — strategy: {strategy_key} ===\n"
+        f"{strategy_mandate}\n"
+        f"{funnel_section}\n"
+        f"Artifact-producing actions: {artifact_list}\n\n"
         "Rules:\n"
         "- Respond with a single JSON object containing `action` and required params.\n"
         "- Include `\"business_id\": \"<your id>\"` so the action attributes correctly.\n"
         "- Do NOT escalate to the operator — you are autonomous.\n"
+        "- If your strategy is structurally a poor fit for your niche (e.g. you have\n"
+        "  evidence cold-start distribution is impossible), respond with action `wait`\n"
+        "  AND include `\"pivot_suggestion\": \"<alternative strategy + why>\"` —\n"
+        "  the cull loop reads pivot_suggestion when killing a stalled business.\n"
         "- If you genuinely have nothing concrete to do, respond `{\"action\": \"wait\"}` and\n"
-        "  the cycle will skip — but repeated waits increment the stall counter and\n"
-        "  shorten your kill clock.\n\n"
+        "  the cycle will skip — repeated waits increment the stall counter.\n\n"
         f"Example response:\n{response_example}"
     )
 
     return "\n\n".join(sections)
+
+
+def _strategy_mandate(strategy_key: str) -> str:
+    """Load the per-strategy mandate text. Falls back to a generic mandate
+    if the strategy isn't in the registry (e.g. older genome with custom
+    strategy)."""
+    try:
+        from clawbot.business_strategies import get_strategy
+    except Exception:
+        return _DEFAULT_MANDATE
+    strat = get_strategy(strategy_key)
+    if strat is None:
+        return _DEFAULT_MANDATE
+    return f"{strat.one_line}\n\n{strat.mandate_template}"
+
+
+_DEFAULT_MANDATE = (
+    "Produce ONE concrete artifact this cycle that advances your business goal.\n"
+    "Use the available skills below. If nothing fits, respond {\"action\": \"wait\"}.\n"
+)

@@ -46,6 +46,12 @@ class Genome(BaseModel):
 
     All fields except niche_question + price_gbp have safe defaults so
     minimal genomes from early templates still validate.
+
+    Z5: `strategy` field added. Names the entire revenue-model template
+    (paid_personalised_report / affiliate_aggregator / freemium_lead_funnel
+    / seo_content_site). Cycle runner reads it to pick the right mandate.
+    Defaults to paid_personalised_report for backward compat with
+    pre-Z5 genomes.
     """
     niche_question: str = Field(min_length=4, max_length=300)
     price_gbp: float = Field(gt=0.0, le=500.0)
@@ -53,6 +59,7 @@ class Genome(BaseModel):
     copy_voice: str = Field(default="plain", max_length=80)
     fulfilment_template: str = Field(default="default_v1", max_length=80)
     target_audience: str = Field(default="uk_adult", max_length=120)
+    strategy: str = Field(default="paid_personalised_report", max_length=64)
     extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "allow"}  # tolerate forward-compat fields

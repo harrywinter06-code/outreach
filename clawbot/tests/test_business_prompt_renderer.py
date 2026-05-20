@@ -51,7 +51,8 @@ def test_prompt_contains_identity_state_recent_skills_mandate():
     assert "=== STATE ===" in out
     assert "=== RECENT ATTEMPTS ===" in out
     assert "=== AVAILABLE SKILLS" in out
-    assert "=== MANDATE ===" in out
+    # Z5: mandate header now embeds the strategy key
+    assert "=== MANDATE" in out and "strategy:" in out
 
 
 def test_prompt_includes_genome_fields():
