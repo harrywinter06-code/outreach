@@ -63,10 +63,29 @@ def _parse_action_json(raw: str) -> dict[str, Any] | None:
     return None
 
 
-def action_produces_artifact(action_name: str) -> bool:
+def action_produces_artifact(action_name: str, strategy: str | None = None) -> bool:
     """True iff dispatching this action counts as producing a concrete
-    artifact (post URL, email sent, payment link created)."""
-    return action_name in ARTIFACT_ACTIONS
+    artifact for the given strategy.
+
+    Z5: Per-strategy expansion. The global ARTIFACT_ACTIONS list only
+    covered the paid_personalised_report model (publishes that drive
+    traffic). Affiliate, SEO, and freemium strategies have different
+    progress markers — affiliate counts comparison-page writes,
+    SEO counts article writes, freemium counts free-tool improvements.
+    Each strategy's extra_artifact_actions is unioned with the global
+    list before checking."""
+    if action_name in ARTIFACT_ACTIONS:
+        return True
+    if not strategy:
+        return False
+    try:
+        from clawbot.business_strategies import get_strategy
+    except Exception:
+        return False
+    strat = get_strategy(strategy)
+    if strat is None:
+        return False
+    return action_name in strat.extra_artifact_actions
 
 
 # Framing fields the directive_router strips before passing to skill.run().
@@ -233,18 +252,17 @@ class BusinessCycleRunner:
             {"response": json.dumps(data), "chain_id": chain_id},
         )
 
-        # Z3.5: dispatch-time artifact crediting was hallucinating progress.
-        # A skill can return `{"ok": False, "url": ""}` for missing creds, the
-        # cycle runner only checked the action name, and the substrate kept
-        # marking artifacts for posts that never went public. Now: only credit
-        # artifact if (a) action is in ARTIFACT_ACTIONS AND (b) a successful
-        # skill_calls row materialises for this business+skill in the next
-        # few seconds.
-        if not action_produces_artifact(action):
+        # Z3.5 + Z5: artifact crediting is now both result-verified AND
+        # strategy-aware. Pull strategy from genome so affiliate / SEO /
+        # freemium businesses get credit for their model-appropriate work
+        # (write_long_form_article, fs_write, keyword_research, etc.)
+        # rather than only paid_personalised_report's publish-to-social actions.
+        strategy = (business.genome or {}).get("strategy") if business.genome else None
+        if not action_produces_artifact(action, strategy=strategy):
             await self._bump_stall(business)
             logger.info(
-                "Business %s dispatched non-artifact action=%s, stall++",
-                business.business_id, action,
+                "Business %s (strategy=%s) dispatched non-artifact action=%s, stall++",
+                business.business_id, strategy, action,
             )
             return False
 

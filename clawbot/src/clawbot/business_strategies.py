@@ -48,6 +48,12 @@ class BusinessStrategy:
     distribution_required: bool  # True = needs human seeding; False = organic-discoverable
     skill_hints: list[str] = field(default_factory=list)
     success_metric: str = "revenue_total_gbp"  # what column on `businesses` measures progress
+    # Per-strategy artifact actions — actions that COUNT AS PROGRESS for this
+    # strategy. Cycle runner checks this list before marking artifact. Different
+    # strategies recognise different progress: affiliate counts comparison-page
+    # writes; SEO counts article writes; freemium counts free-tool improvements
+    # + email captures; paid counts publishes that drive traffic.
+    extra_artifact_actions: list[str] = field(default_factory=list)
 
 
 _REGISTRY: dict[str, BusinessStrategy] = {
@@ -91,6 +97,11 @@ _REGISTRY: dict[str, BusinessStrategy] = {
                      "vector_search", "vector_write", "http_fetch", "experiment_create",
                      "competitor_pricing_scrape", "keyword_research"],
         success_metric="revenue_total_gbp",
+        # Writing comparison content + research that informs it = progress for affiliate
+        extra_artifact_actions=["write_long_form_article", "write_case_study",
+                                "write_landing_page_copy", "fs_write",
+                                "competitor_pricing_scrape", "keyword_research",
+                                "vector_write"],
     ),
     "freemium_lead_funnel": BusinessStrategy(
         key="freemium_lead_funnel",
@@ -112,6 +123,8 @@ _REGISTRY: dict[str, BusinessStrategy] = {
                      "fs_write", "vector_write", "bluesky_post", "mastodon_post",
                      "experiment_create"],
         success_metric="leads_total",  # use lead count as fitness signal
+        extra_artifact_actions=["write_long_form_article", "write_landing_page_copy",
+                                "fs_write", "vector_write"],
     ),
     "seo_content_site": BusinessStrategy(
         key="seo_content_site",
@@ -135,6 +148,10 @@ _REGISTRY: dict[str, BusinessStrategy] = {
                      "keyword_research", "serp_check", "schema_org_generate",
                      "sitemap_generate", "vector_search"],
         success_metric="article_count",  # use published-article count as fitness signal
+        # Writing articles + writing them to disk + research that informs them all count
+        extra_artifact_actions=["write_long_form_article", "write_case_study", "fs_write",
+                                "keyword_research", "serp_check", "schema_org_generate",
+                                "sitemap_generate"],
     ),
 }
 
