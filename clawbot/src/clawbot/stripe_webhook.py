@@ -117,16 +117,22 @@ async def _route_event(event: dict) -> dict:
         amount_gbp = float(obj.get("amount") or 0) / 100.0
         if amount_gbp <= 0:
             return {"ok": True, "routed": False, "reason": "zero_amount"}
-        # Z3: self-pay filter. If billing email matches OPERATOR_EMAIL,
-        # tag this as is_self_paid=True so fitness excludes it. Prevents
-        # operator's own test purchases from inflating the £ signal.
+        # Z3 + Z5b: synthetic-revenue filter. Catches operator's own test
+        # purchases AND test-shaped data (example.com domains, 'test' local
+        # parts, our own forwarding-domain aliases) AND test-pattern external
+        # IDs from smoke-testing. Anything tagged is_self_paid=True is
+        # excluded from fitness AND from the dashboard's 'real revenue' KPI.
         customer_email = _extract_customer_email(obj)
-        is_self = _is_operator_email(customer_email)
+        ext_id = str(obj.get("id") or event.get("id"))
+        is_self = (
+            _is_synthetic_email(customer_email)
+            or _is_synthetic_external_id(ext_id)
+        )
         inserted = await BUSINESS_STORE.record_revenue(
             business_id=biz_id,
             amount_gbp=amount_gbp,
             source="stripe",
-            external_id=str(obj.get("id") or event.get("id")),
+            external_id=ext_id,
             is_self_paid=is_self,
             metadata={
                 "stripe_event_id": event.get("id"),
@@ -183,14 +189,60 @@ def _extract_customer_email(charge_or_pi: dict) -> str:
     return str(email).strip().lower()
 
 
-def _is_operator_email(email: str) -> bool:
-    """True if this email matches the operator (test purchases shouldn't
-    inflate fitness). The OPERATOR_EMAIL env var overrides the default."""
+def _is_synthetic_email(email: str) -> bool:
+    """True if this email is obviously NOT a real arms-length paying customer.
+
+    Treats as synthetic:
+    - Operator's own email (OPERATOR_EMAIL env var)
+    - Standard test/example domains: example.com, example.org, example.net,
+      test.com, localhost, .invalid, .test
+    - Any address containing the substring 'test' (test_buyer@, mytest@, etc.)
+    - Any address on our own forwarding domain (bot.veriflowlabs.co.uk and
+      veriflowlabs.co.uk — the agent's autonomous-signup aliases land there
+      and any 'revenue' from those is operator-owned by definition)
+
+    All matches → is_self_paid=True so the row doesn't pollute the fitness
+    signal or the dashboard's 'real revenue' KPI.
+    """
     if not email:
-        return False
+        # No billing email at all is suspicious — Stripe-CLI test events
+        # often have none. Treat as synthetic by default.
+        return True
+    e = email.strip().lower()
     import os
     operator = os.environ.get("OPERATOR_EMAIL", "harrywinter06@gmail.com").strip().lower()
-    return email == operator
+    if e == operator:
+        return True
+    synthetic_domains = (
+        "@example.com", "@example.org", "@example.net",
+        "@test.com", "@test.org", "@localhost",
+        ".invalid", ".test",
+        "@bot.veriflowlabs.co.uk", "@veriflowlabs.co.uk",
+    )
+    if any(e.endswith(d) for d in synthetic_domains):
+        return True
+    if "test" in e.split("@", 1)[0]:
+        # Local-part contains 'test' (test_buyer, mytest, testing123, etc.)
+        return True
+    return False
+
+
+# Backwards-compatible alias for any caller still using the old name.
+_is_operator_email = _is_synthetic_email
+
+
+def _is_synthetic_external_id(ext_id: str) -> bool:
+    """Stripe charge IDs are stable (ch_3O...). Test-webhook-generated IDs
+    used by our smoke tests follow obvious patterns. Treat as synthetic so
+    even if the billing email leak slips past, the external_id catches it."""
+    if not ext_id:
+        return False
+    e = ext_id.lower()
+    test_prefixes = (
+        "ch_z3_", "ch_smoke_", "ch_signed_", "ch_https_",
+        "ch_final_", "ch_tampered_", "ch_valid_", "ch_test_",
+    )
+    return any(e.startswith(p) for p in test_prefixes)
 
 
 async def _fire_fulfilment(

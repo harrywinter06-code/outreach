@@ -96,12 +96,15 @@ async def _gather_state() -> dict:
             "GROUP BY skill_name, error "
             "ORDER BY n DESC LIMIT 10"
         )]
-        # Totals (all time, real only)
+        # Totals (all time, real only) + synthetic split so test/operator
+        # purchases are visible separately and can't masquerade as real revenue
         totals = await conn.fetchrow(
             "SELECT "
             "(SELECT COUNT(*) FROM business_leads) AS leads_total, "
             "(SELECT COUNT(*) FROM business_revenue WHERE NOT is_self_paid) AS revenue_rows, "
             "(SELECT COALESCE(SUM(amount_gbp), 0) FROM business_revenue WHERE NOT is_self_paid) AS revenue_total, "
+            "(SELECT COUNT(*) FROM business_revenue WHERE is_self_paid) AS synthetic_rows, "
+            "(SELECT COALESCE(SUM(amount_gbp), 0) FROM business_revenue WHERE is_self_paid) AS synthetic_total, "
             "(SELECT COUNT(*) FROM business_templates) AS templates, "
             "(SELECT COUNT(*) FROM businesses WHERE status='active') AS active_biz, "
             "(SELECT COUNT(*) FROM businesses WHERE status='killed') AS killed_biz"
@@ -145,6 +148,8 @@ def _credential_status() -> list[dict]:
 def _render(data: dict) -> str:
     t = data["totals"]
     rev_total = float(t.get("revenue_total", 0) or 0)
+    synth_total = float(t.get("synthetic_total", 0) or 0)
+    synth_rows = int(t.get("synthetic_rows", 0) or 0)
     biz_rows = "\n".join(_render_biz(b) for b in data["businesses"]) or "<tr><td colspan=6 class=muted>none active</td></tr>"
     leads_rows = "\n".join(_render_lead(l) for l in data["leads"]) or "<tr><td colspan=3 class=muted>0 captured</td></tr>"
     rev_rows = "\n".join(_render_rev(r) for r in data["revenue"]) or "<tr><td colspan=4 class=muted>0 real customer £ to date</td></tr>"
@@ -173,6 +178,10 @@ h2 {{ font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em;
           letter-spacing: 0.05em; }}
 .kpi.zero .v {{ color: #aaa; }}
 .kpi.pos .v {{ color: #1c6ea4; }}
+.kpi.synthetic .v {{ color: #b58000; }}
+.warn {{ background: #fff8dc; border: 1px solid #d4a700; color: #6b4f00;
+       padding: 8px 12px; border-radius: 4px; font-size: 13px;
+       margin: 12px 0; }}
 table {{ width: 100%; border-collapse: collapse; background: white;
         border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }}
 th, td {{ text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; }}
@@ -203,7 +212,11 @@ small {{ color: #888; }}
   <div class=kpi>
     <div class=v>{int(t.get('templates', 0) or 0)}</div><div class=l>graduated genomes</div>
   </div>
+  <div class="kpi {'synthetic' if synth_total > 0 else 'zero'}">
+    <div class=v>£{synth_total:.2f}</div><div class=l>synthetic / test (excluded)</div>
+  </div>
 </div>
+{('<div class=warn>⚠ ' + str(synth_rows) + ' synthetic revenue row(s) on file — test purchases, NOT real revenue. They are correctly excluded from the £ KPI above.</div>') if synth_rows > 0 else ''}
 
 <h2>businesses</h2>
 <table>

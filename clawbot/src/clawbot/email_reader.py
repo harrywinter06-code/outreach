@@ -58,10 +58,12 @@ class EmailReader:
             # is robust. Non-Gmail providers' spam folders are tried too.
             for folder in ('INBOX', '"[Gmail]/Spam"', 'Spam', 'Junk'):
                 try:
-                    status, _ = imap.select(folder)
+                    sel = imap.select(folder)
                 except Exception:
                     continue
-                if status != "OK":
+                # Defensive against IMAP servers that return non-tuple,
+                # and against test mocks that return a MagicMock
+                if not (isinstance(sel, tuple) and len(sel) >= 1 and sel[0] == "OK"):
                     continue
                 status, data = imap.search(None, f'(SINCE "{since_str}")')
                 if status != "OK" or not data or not data[0]:
