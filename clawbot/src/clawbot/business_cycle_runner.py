@@ -311,7 +311,7 @@ class BusinessCycleRunner:
 
     async def _await_skill_success(
         self, *, business_id: str, skill_name: str, since: datetime,
-        max_wait_s: float = 8.0, poll_s: float = 0.5,
+        max_wait_s: float = 60.0, poll_s: float = 2.0,
     ) -> bool:
         """Poll skill_calls for up to max_wait_s waiting for an ok=true row
         with this business_id + skill_name written since `since`. Returns
