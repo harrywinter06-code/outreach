@@ -101,7 +101,7 @@ _REGISTRY: dict[str, BusinessStrategy] = {
         extra_artifact_actions=["write_long_form_article", "write_case_study",
                                 "write_landing_page_copy", "fs_write",
                                 "competitor_pricing_scrape", "keyword_research",
-                                "vector_write"],
+                                "vector_search", "vector_write", "http_fetch"],
     ),
     "freemium_lead_funnel": BusinessStrategy(
         key="freemium_lead_funnel",
@@ -124,7 +124,7 @@ _REGISTRY: dict[str, BusinessStrategy] = {
                      "experiment_create"],
         success_metric="leads_total",  # use lead count as fitness signal
         extra_artifact_actions=["write_long_form_article", "write_landing_page_copy",
-                                "fs_write", "vector_write"],
+                                "fs_write", "vector_write", "vector_search"],
     ),
     "seo_content_site": BusinessStrategy(
         key="seo_content_site",
@@ -151,7 +151,7 @@ _REGISTRY: dict[str, BusinessStrategy] = {
         # Writing articles + writing them to disk + research that informs them all count
         extra_artifact_actions=["write_long_form_article", "write_case_study", "fs_write",
                                 "keyword_research", "serp_check", "schema_org_generate",
-                                "sitemap_generate"],
+                                "sitemap_generate", "vector_search"],
     ),
 }
 
